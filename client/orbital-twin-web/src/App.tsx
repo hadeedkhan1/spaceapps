@@ -1,105 +1,207 @@
 import { useEffect, useRef, useState } from 'react';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { HAZARDS, Hazard, State } from './contract';
+import { LineChart, Line, XAxis, YAxis, ReferenceLine, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { HAZARDS, Hazard, State, Sys } from './contract';
 import { getState, sendAlert, actionFor } from './api';
-import BodyMap, { COLOR, ARROW } from './components/BodyMap';
+import BodyMap from './components/BodyMap';
 import Selfie from './components/Selfie';
 
-type Phase = 'idle' | 'sent' | 'acked' | 'escalated';
-const PHASE_TEXT: Record<Phase, string> = {
-  idle: 'No message sent yet.', sent: 'Sent to Earth. Waiting for acknowledgment\u2026',
-  acked: 'Acknowledged. Crew moved to shelter, dose is slowing.', escalated: 'No reply. Escalated to the ground contact; dose keeps climbing.' };
+type Tab = 'status' | 'dose' | 'earth' | 'checkin';
+type Phase = 'idle' | 'sent' | 'waiting' | 'acked' | 'escalated';
+const WORD = { green: 'Stable', yellow: 'Watch', red: 'Alert' };
+const GLYPH = { green: '✓', yellow: '⚠', red: '!' };
+const TREND = { up: '↗ Rising', flat: '→ Steady', down: '↘ Falling' };
+const TABS: [Tab, string][] = [['status', 'Status'], ['dose', 'Dose'], ['earth', 'Earth'], ['checkin', 'Check-in']];
+const ICON: Record<Tab, any> = {
+  status: <path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z" />,
+  dose: <><circle cx="12" cy="12" r="8" /><path d="M12 12l4-3" /></>,
+  earth: <><circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4c3 3 3 13 0 16M12 4c-3 3-3 13 0 16" /></>,
+  checkin: <><rect x="3" y="7" width="18" height="12" rx="3" /><circle cx="12" cy="13" r="3.5" /></> };
+const SYS_ICON: Record<string, any> = {
+  brain: <path d="M12 3a3 3 0 0 0-5.7 1.3A3.5 3.5 0 0 0 4 10a3.5 3.5 0 0 0 2 6.2A3.5 3.5 0 0 0 12 18m0-15a3 3 0 0 1 5.7 1.3A3.5 3.5 0 0 1 20 10a3.5 3.5 0 0 1-2 6.2A3.5 3.5 0 0 1 12 18M12 3v16" />,
+  eyes: <><path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6z" /><circle cx="12" cy="12" r="2.5" /></>,
+  heart: <path d="M20.5 8.8c0 4.8-8.5 10-8.5 10s-8.5-5.2-8.5-10a4.2 4.2 0 0 1 8.5-1.1 4.2 4.2 0 0 1 8.5 1.1z" />,
+  immune: <path d="M12 3 20 6v5c0 5-3.4 8.3-8 10-4.6-1.7-8-5-8-10V6l8-3zm-3 9 2 2 4-4" />,
+  bones: <path d="M7 8a2.5 2.5 0 1 1 3-3l5 5a2.5 2.5 0 1 1-3 3l-5-5zm10 8a2.5 2.5 0 1 1-3 3l-5-5a2.5 2.5 0 1 1 3-3l5 5z" />,
+  muscle: <path d="M5 13c1-2 2-4 4-5l2 3 2-1 1-4 2 1 1 5 3 1v4c-4 3-12 2-15-1-2-2-1-4 0-6z" />
+};
+const fmt = (s: number) => (s < 60 ? `${s} s` : `${Math.round(s / 60)} min`);
+const hm = (d = new Date()) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const STEPS = ['Sent', 'Waiting', 'Acknowledged', 'Escalated'];
+const ACTIVE: Record<Phase, number> = { idle: 0, sent: 0, waiting: 1, acked: 2, escalated: 3 };
+const SOURCES = ['NOAA GOES proton flux', 'NASA DONKI', 'NASA MSL RAD', 'NASA-STD-3001', 'NASA Human Research Program', 'WESAD / PhysioNet'];
+const STATUS_ORDER = ['brain', 'eyes', 'heart', 'immune', 'bones', 'muscle'];
+
+function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: any }) {
+  return (
+    <div className="scrim" onClick={onClose}>
+      <div className="sheet" role="dialog" aria-label={title} onClick={e => e.stopPropagation()}>
+        <i className="grab" />
+        <div className="sh"><h2>{title}</h2><button className="x" aria-label="Close" onClick={onClose}>✕</button></div>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [st, setSt] = useState<State | null>(null);
+  const [tab, setTab] = useState<Tab>('status');
   const [sel, setSel] = useState('heart');
+  const [open, setOpen] = useState(false);
+  const [info, setInfo] = useState(false);
   const [hz, setHz] = useState<Hazard | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
+  const [stamp, setStamp] = useState('');
   const [delay, setDelay] = useState(1200);
-  const [face, setFace] = useState([{ day: 0, pct: 0 }, { day: 10, pct: 0.6 }, { day: 20, pct: 1.4 }, { day: 30, pct: 2.1 }]);
-  const timer = useRef<any>();
-  useEffect(() => { getState().then(setSt); }, []);
-  if (!st) return <p className="note">Loading\u2026</p>;
+  const [view, setView] = useState<'no' | 'sh'>('no');
+  const [online, setOnline] = useState(navigator.onLine);
+  const [face, setFace] = useState([{ day: 1, pct: 1 }, { day: 40, pct: 3 }, { day: 78, pct: 6 }, { day: 79, pct: 5 }, { day: 80, pct: 4 }]);
+  const timers = useRef<any[]>([]);
+  const clear = () => { timers.current.forEach(clearTimeout); timers.current = []; };
+  useEffect(() => {
+    getState().then(setSt);
+    const on = () => setOnline(true), off = () => setOnline(false);
+    addEventListener('online', on); addEventListener('offline', off);
+    return () => { removeEventListener('online', on); removeEventListener('offline', off); clear(); };
+  }, []);
+
+  if (!st) return (
+    <div className="app"><h1>Status</h1><div className="card"><h2>Learning your baseline</h2><p className="mut">Comparing your latest resting readings…</p></div>
+      <div className="card skel" /></div>);
 
   const s = st.systems.find(x => x.id === sel)!;
-  const last = st.dose.series[st.dose.series.length - 1];
-  const used = phase === 'acked' ? last.sheltered : last.ignored;
-  const pct = Math.round((used / st.dose.limit) * 100);
+  const by = (id: string) => st.systems.find(x => x.id === id)!;
+  const dim = (x: Sys) => hz && !x.hazards.includes(hz);
+  const pick = (id: string) => { setSel(id); setOpen(true); };
   const plan = actionFor(delay);
 
   async function send() {
-    setPhase('sent');
+    clear(); setPhase('sent'); setStamp(hm());
     await sendAlert(`${st!.alert.text} Plan: ${plan}`);
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setPhase(p => (p === 'sent' ? 'escalated' : p)), 20000);
+    timers.current.push(setTimeout(() => { setPhase('waiting'); setStamp(hm(new Date(Date.now() + delay * 2000))); }, 1500));
+    timers.current.push(setTimeout(() => { setPhase('escalated'); setStamp(hm()); }, 21500));
   }
-  const ack = () => { clearTimeout(timer.current); setPhase('acked'); };
-  const onFace = (p: number) => setFace(f => [...f, { day: f[f.length - 1].day + 10, pct: p }]);
+  const ack = () => { clear(); setPhase('acked'); setStamp(hm()); setView('sh'); };
+  const reset = () => { clear(); setPhase('idle'); setView('no'); };
+
+  const cur = st.dose.series.find(p => p.day === st.day) || st.dose.series[st.dose.series.length - 1];
+  const prev = st.dose.series.find(p => p.day === st.day - 1) || cur;
+  const mSv = view === 'sh' ? cur.sheltered : cur.ignored;
+  const pct = Math.round((mSv / st.dose.limit) * 100);
+  const C = 2 * Math.PI * 70;
+
+  const sub = { idle: 'Connected, across the distance', sent: `Sent at ${stamp} · encrypted`, waiting: `Earliest reply window · ${stamp}`,
+    acked: `Acknowledged at ${stamp}`, escalated: `Escalated onboard at ${stamp}` }[phase];
+  const foot = { idle: `${fmt(delay)} one way · ~${fmt(delay * 2)} round trip`, sent: 'Queued for relay', waiting: `${fmt(delay)} one way · ~${fmt(delay * 2)} round trip`,
+    acked: 'Flight clinician received your evidence', escalated: 'No reply yet · follow onboard protocol' }[phase];
+  const guide = () => { setSel('heart'); setOpen(true); };
+  const [label, action] = ({ idle: [online ? 'Send to Earth' : 'Queue for Earth', send], sent: ['Message sent', null], waiting: ['Waiting for Earth', null],
+    acked: ['Review heart guidance', guide], escalated: ['View onboard protocol', guide] } as any)[phase] as [string, (() => void) | null];
+
+  const chip = (id: string) => { const x = by(id); return (
+    <button key={id} className={`sys ${sel === id ? 'on' : ''} ${dim(x) ? 'dim' : ''}`} onClick={() => pick(id)}>
+      <b>{x.name}</b><span className={x.status}>{GLYPH[x.status]} {WORD[x.status]}</span></button>); };
 
   return (
-    <main>
-      <header><h1>Orbital Twin</h1><p>Day {st.day} of the mission. Health status against this astronaut\u2019s own baseline.</p></header>
-
-      <section className="map card">
-        <div className="chips" role="group" aria-label="Hazard overlay">
-          <button className={hz ? 'ghost' : ''} onClick={() => setHz(null)}>All systems</button>
-          {HAZARDS.map(h => <button key={h} className={hz === h ? '' : 'ghost'} onClick={() => setHz(hz === h ? null : h)}>{h}</button>)}
+    <div className="app">
+      <div className="ios-status" aria-hidden="true"><b>9:41</b><span className="island" /><svg className="status-icons" viewBox="0 0 72 18"><path d="M1 16h4V11H1zm7 0h4V8H8zm7 0h4V5h-4z" fill="currentColor"/><path d="M27 7a13 13 0 0 1 17 0M30 10a9 9 0 0 1 11 0m-8 3a4 4 0 0 1 5 0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><rect x="52" y="4" width="17" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5"/><rect x="69.5" y="7" width="2" height="4" rx="1" fill="currentColor"/><path d="M54.5 6.5h11v5h-11z" fill="currentColor"/></svg></div>
+      {tab === 'status' && <>
+        <div className="top"><h1>Status</h1><button className="x" aria-label="Sources and safety" onClick={() => setInfo(true)}>ⓘ</button></div>
+        <p className="sub">Mission day {st.day}</p>
+        <div className="chips" role="group" aria-label="Hazard filter">
+          {[null, ...HAZARDS].map(h => <button key={h || 'all'} className={`chip ${hz === h ? 'on' : ''}`} onClick={() => setHz(h as Hazard | null)}>{h ? h[0].toUpperCase() + h.slice(1) : 'All'}</button>)}
         </div>
-        <BodyMap systems={st.systems} sel={sel} onSel={setSel} hz={hz} />
-        <ul className="legend">
-          {st.systems.map(x => (
-            <li key={x.id}><button className={sel === x.id ? 'on' : 'ghost'} onClick={() => setSel(x.id)}>
-              <i style={{ background: COLOR[x.status] }} />{x.name}: {x.status} {ARROW[x.trend]}</button></li>))}
+        <div className="bodycard">
+          <div className="col">{['brain', 'heart', 'bones'].map(chip)}</div>
+          <BodyMap systems={st.systems} sel={sel} onSel={pick} hz={hz} />
+          <div className="col">{['eyes', 'immune', 'muscle'].map(chip)}</div>
+        </div>
+        <ul className="card list">
+          {STATUS_ORDER.map(id => by(id)).map(x => (
+            <li key={x.id} className={dim(x) ? 'dim' : ''}><button onClick={() => pick(x.id)}>
+              <span className="name"><svg className={`sys-icon ${x.status}`} viewBox="0 0 24 24" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{SYS_ICON[x.id]}</svg><span><b>{x.name}</b><small>{x.z.toFixed(1)} SD from baseline</small></span></span>
+              <span className="r"><em className={x.status}>{GLYPH[x.status]} {WORD[x.status]}</em><small>{TREND[x.trend]} ›</small></span></button></li>))}
         </ul>
-      </section>
+      </>}
 
-      <section className="card">
-        <h2>{s.name} <small>{s.z.toFixed(1)} SD from baseline</small></h2>
-        <h3>How it is measured</h3><p>{s.measure}</p>
+      {tab === 'dose' && <>
+        <h1>Dose</h1><p className="sub">Your radiation exposure</p>
+        <div className="card center dose-card">
+          <div className="between dose-kicker"><b>CAREER EXPOSURE</b><b className="green">✓ Within model</b></div>
+          <svg viewBox="0 0 160 160" width="155" height="155" role="img" aria-label={`${pct}% of career limit`}>
+            <circle cx="80" cy="80" r="70" className="trk" />
+            <circle cx="80" cy="80" r="70" className="arc" strokeDasharray={`${(C * Math.min(pct, 100)) / 100} ${C}`} transform="rotate(-90 80 80)" />
+            <text x="80" y="88" textAnchor="middle" className="big">{pct}%</text>
+            <text x="80" y="106" textAnchor="middle" className="smt">of career limit</text>
+          </svg>
+          <p className="mut">{Math.round(mSv)} / {st.dose.limit} mSv · Illustrative career model</p>
+        </div>
+        <div className="card">
+          <h2>A safer trajectory</h2>
+          <div className="seg"><button className={view === 'no' ? 'on' : ''} onClick={() => setView('no')}>No shelter</button>
+            <button className={view === 'sh' ? 'on' : ''} onClick={() => setView('sh')}>Sheltered</button></div>
+          <ResponsiveContainer width="100%" height={145}>
+            <LineChart data={st.dose.series}><CartesianGrid stroke="var(--sep)" vertical={false} />
+              <XAxis dataKey="day" domain={[1, 240]} ticks={[1, 80, 160, 240]} tick={{ fill: 'var(--mute)', fontSize: 11 }} stroke="var(--sep)" label={{ value: 'Mission day →', position: 'insideBottom', offset: -9, fill: 'var(--mute)', fontSize: 11 }} />
+              <YAxis domain={[0, st.dose.limit]} ticks={[0, 300, 600]} tick={{ fill: 'var(--mute)', fontSize: 11 }} stroke="var(--sep)" />
+              <ReferenceLine y={st.dose.limit} stroke="var(--yellow)" strokeDasharray="4 4" />
+              <Line dataKey="ignored" stroke="var(--mute)" dot={false} strokeWidth={view === 'no' ? 3 : 1.5} isAnimationActive={false} />
+              <Line dataKey="sheltered" stroke="var(--blue)" dot={false} strokeWidth={view === 'sh' ? 3 : 1.5} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+          <div className="dose-legend mut"><span><i className="legend-gray" />No shelter</span><span><i className="legend-blue" />Sheltered</span><span><i className="legend-yellow" />Limit</span></div>
+        </div>
+        <p className="mut pad">Illustrative model. Verify limits against NASA-STD-3001.</p>
+        <p className="row">Today's dose · {(mSv - (view === 'sh' ? prev.sheltered : prev.ignored)).toFixed(2)} mSv</p>
+      </>}
+
+      {tab === 'earth' && <>
+        <h1>Earth</h1><p className="sub">{sub}</p>
+        <div className="card">
+          <p className="eyebrow warn">⚠ WATCH · HEART</p>
+          <h2>{st.alert.title || 'Alert'}</h2><p className="mut">{st.alert.text}</p>
+          <ul className="cites">{st.alert.cites.map(c => <li key={c.title}><a href={c.url}>↗ {c.title} ›</a></li>)}</ul>
+        </div>
+        {!online && <div className="card"><b>Working offline, will sync when the link returns</b><p className="mut">Follow the onboard medical protocol.</p></div>}
+        <div className="card">
+          <div className="between"><b>Message delay</b><b className="blue">{fmt(delay)}</b></div>
+          <input type="range" min={2} max={1200} value={delay} aria-label="Message delay" onChange={e => setDelay(+e.target.value)} />
+          <div className="between mut"><small>2 s</small><small>1 min</small><small>20 min</small></div>
+        </div>
+        <div className="card"><p className="eyebrow blue">RECOMMENDED ACTION</p><p>{plan}</p></div>
+        <ol className="tl">{STEPS.map((n, i) => {
+          const a = ACTIVE[phase], done = i < a && !(phase === 'escalated' && i === 2), now = i === a;
+          return <li key={n} className={now ? (i === 3 ? 'bad' : 'now') : done ? 'done' : ''}><i>{done ? '✓' : ''}</i>{n}</li>; })}</ol>
+        <button className="btn" disabled={!action} onClick={() => action && action()}>{label}</button>
+        <p className="mut pad">{foot}</p>
+        {phase === 'waiting' && <button className="link" onClick={ack}>Demo: simulate Earth’s reply</button>}
+        {phase !== 'idle' && <button className="link" onClick={reset}>Reset demo</button>}
+      </>}
+
+      {tab === 'checkin' && <>
+        <h1>Check-in</h1><p className="sub">A moment for your baseline</p>
+        <Selfie onMetric={p => setFace(f => [...f, { day: f[f.length - 1].day + 1, pct: p }])} />
+        <div className="card checkin-chart"><h2>Face puffiness vs day one</h2>
+          <ResponsiveContainer width="100%" height={50}><LineChart data={face}><XAxis dataKey="day" ticks={[1, 40, 80]} tickFormatter={d => d === 1 ? 'Day 1' : `${d}`} axisLine={false} tickLine={false} tick={{ fill: 'var(--mute)', fontSize: 10 }} /><Line dataKey="pct" stroke="var(--blue)" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer>
+          <p className="mut">+{face[face.length - 1].pct}% today · Illustrative image estimate</p></div>
+        <div className="card trio">{face.slice(-3).map(p => <div key={p.day}><b>+{p.pct}%</b><small>Day {p.day}</small></div>)}</div>
+      </>}
+
+      <nav className="tabbar" aria-label="Main">
+        {TABS.map(([k, n]) => (
+          <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-current={tab === k}>
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{ICON[k]}</svg>{n}</button>))}
+      </nav>
+      <div className="ios-home" aria-hidden="true" />
+
+      {open && <Sheet title={s.name} onClose={() => setOpen(false)}>
+        <h3>How it’s measured</h3><p>{s.measure}</p>
         <h3>How spaceflight changes it</h3><p>{s.change}</p>
         <h3>When to escalate</h3><p>{s.escalate}</p>
-        <p className="note">Source: {s.source}</p>
-      </section>
-
-      <section className="card">
-        <h2>Radiation dose <small>{pct}% of career limit</small></h2>
-        <div className="bar"><b style={{ width: `${Math.min(pct, 100)}%`, background: pct > 66 ? COLOR.red : pct > 33 ? COLOR.yellow : COLOR.green }} /></div>
-        <ResponsiveContainer width="100%" height={200}>
-          <LineChart data={st.dose.series}><CartesianGrid stroke="#26334d" />
-            <XAxis dataKey="day" stroke="#93a1bd" /><YAxis stroke="#93a1bd" /><Tooltip />
-            <ReferenceLine y={st.dose.limit} stroke={COLOR.red} strokeDasharray="4 4" />
-            <Line dataKey="ignored" name="No shelter (mSv)" stroke={COLOR.red} dot={false} strokeWidth={phase === 'acked' ? 1 : 3} />
-            <Line dataKey="sheltered" name="Sheltered (mSv)" stroke={COLOR.green} dot={false} strokeWidth={phase === 'acked' ? 3 : 1} />
-          </LineChart>
-        </ResponsiveContainer>
-        <p className="note">Illustrative model. Storm rates and shielding are assumptions; verify the limit and background rate in NASA-STD-3001 and MSL RAD papers.</p>
-      </section>
-
-      <section className="card">
-        <h2>Alert to Earth</h2>
-        <p>{st.alert.text}</p>
-        <ul>{st.alert.cites.map(c => <li key={c.title}><a href={c.url}>{c.title}</a></li>)}</ul>
-        <label>Message delay: {delay < 60 ? `${delay} s` : `${Math.round(delay / 60)} min`}
-          <input type="range" min={1} max={1500} value={delay} onChange={e => setDelay(+e.target.value)} /></label>
-        <p><b>Recommended action:</b> {plan}</p>
-        <div className="row">
-          <button onClick={send} disabled={phase !== 'idle'}>Send to Earth</button>
-          {phase === 'sent' && <button className="ghost" onClick={ack}>Simulate reply</button>}
-          {phase !== 'idle' && <button className="ghost" onClick={() => setPhase('idle')}>Reset</button>}
-        </div>
-        <p className="note" aria-live="polite">{PHASE_TEXT[phase]}</p>
-      </section>
-
-      <section className="card">
-        <h2>Daily photo <small>face puffiness vs day one</small></h2>
-        <Selfie onMetric={onFace} />
-        <ResponsiveContainer width="100%" height={140}>
-          <LineChart data={face}><XAxis dataKey="day" stroke="#93a1bd" /><YAxis stroke="#93a1bd" unit="%" /><Tooltip />
-            <Line dataKey="pct" stroke={COLOR.yellow} strokeWidth={2} /></LineChart>
-        </ResponsiveContainer>
-      </section>
-
-      <footer className="note">Prototype, not a diagnosis. Data: NOAA GOES, NASA DONKI, NASA MSL RAD, NASA-STD-3001, NASA HRP, WESAD/PhysioNet. Simulated drifts are labeled as simulated.</footer>
-    </main>
+        <p className="mut">Source: {s.source}. Illustrative baseline; clinician-defined thresholds.</p></Sheet>}
+      {info && <Sheet title="Sources and safety" onClose={() => setInfo(false)}>
+        <ul className="srcs">{SOURCES.map(x => <li key={x}>{x}</li>)}</ul>
+        <p className="mut">Prototype, not a diagnosis. Simulated drifts are labeled as simulated. Real astronaut garment data is not public.</p></Sheet>}
+    </div>
   );
 }

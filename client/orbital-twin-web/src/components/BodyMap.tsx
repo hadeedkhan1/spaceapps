@@ -1,18 +1,15 @@
 import { Sys, Hazard } from '../contract';
-export const COLOR = { green: '#3ddc97', yellow: '#ffd166', red: '#ff5a5f' };
-export const ARROW = { up: '\u2191', flat: '\u2192', down: '\u2193' };
-
 export default function BodyMap({ systems, sel, onSel, hz }: { systems: Sys[]; sel: string; onSel: (id: string) => void; hz: Hazard | null }) {
   const p = (id: string): any => {
     const s = systems.find(x => x.id === id)!;
     const dim = hz && !s.hazards.includes(hz);
-    return { fill: COLOR[s.status], opacity: dim ? 0.15 : 0.92, stroke: sel === id ? '#fff' : 'none', strokeWidth: 2.5,
+    return { fill: `var(--${s.status})`, opacity: dim ? 0.2 : 1, stroke: sel === id ? 'var(--ink)' : 'none', strokeWidth: 2,
       onClick: () => onSel(id), onKeyDown: (e: any) => e.key === 'Enter' && onSel(id),
       style: { cursor: 'pointer' }, tabIndex: 0, role: 'button', 'aria-label': `${s.name}: ${s.status}` };
   };
   return (
     <svg viewBox="0 0 200 380" className="body" role="group" aria-label="Body map">
-      <g fill="#26334d">
+      <g fill="var(--body)">
         <circle cx="100" cy="45" r="28" /><rect x="65" y="80" width="70" height="125" rx="26" />
         <rect x="40" y="85" width="18" height="110" rx="9" /><rect x="142" y="85" width="18" height="110" rx="9" />
         <rect x="70" y="200" width="28" height="170" rx="12" /><rect x="102" y="200" width="28" height="170" rx="12" />

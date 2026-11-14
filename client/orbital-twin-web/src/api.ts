@@ -15,5 +15,5 @@ export async function sendAlert(text: string) {
 export function actionFor(delaySec: number) {
   if (delaySec < 10) return 'Contact the flight surgeon now.';
   if (delaySec < 120) return 'Send the report and follow the checklist while waiting for a reply.';
-  return 'Act on the autonomous plan, then report back when the link allows.';
+  return 'Repeat at rest. Follow the onboard protocol; don’t wait for Earth.';
 }

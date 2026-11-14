@@ -11,39 +11,44 @@ async function load() {
   return lm;
 }
 const dist = (a: any, b: any, w: number, h: number) => Math.hypot((a.x - b.x) * w, (a.y - b.y) * h);
+const TIP = 'Neutral face, even light';
 
 // Only numbers leave this component; the image is never stored or sent.
 export default function Selfie({ onMetric }: { onMetric: (pct: number) => void }) {
   const v = useRef<HTMLVideoElement>(null);
   const base = useRef<number | null>(null);
   const [on, setOn] = useState(false);
-  const [msg, setMsg] = useState('Camera off.');
+  const [err, setErr] = useState(false);
+  const [msg, setMsg] = useState(TIP);
 
   async function start() {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } });
-      v.current!.srcObject = s; await v.current!.play(); setOn(true);
-      setMsg('Face the camera, neutral expression, even light. The first capture sets your baseline.');
-    } catch { setMsg('Camera blocked. Use the simulate button for the demo.'); }
+      v.current!.srcObject = s; await v.current!.play(); setOn(true); setErr(false); setMsg(TIP);
+    } catch { setErr(true); }
   }
   async function capture() {
-    setMsg('Measuring\u2026');
+    setMsg('Measuring…');
     const el = v.current!, l = await load(), p = l.detect(el).faceLandmarks[0];
     if (!p) return setMsg('No face found. Move closer or add light.');
     const w = el.videoWidth, h = el.videoHeight;
-    const ratio = dist(p[234], p[454], w, h) / dist(p[10], p[152], w, h); // face width / height
+    const ratio = dist(p[234], p[454], w, h) / dist(p[10], p[152], w, h);
     if (base.current == null) base.current = ratio;
     const pct = +((ratio / base.current - 1) * 100).toFixed(1);
-    setMsg(`Face width-to-height change vs day one: ${pct}%`); onMetric(pct);
+    setMsg(`Change vs day one: ${pct}%`); onMetric(pct);
   }
   return (
-    <div>
-      <video ref={v} playsInline muted className={on ? 'cam' : 'cam off'} />
-      <div className="row">
-        {!on ? <button onClick={start}>Start camera</button> : <button onClick={capture}>Capture today\u2019s photo</button>}
-        <button className="ghost" onClick={() => { setMsg('Simulated day-90 photo added.'); onMetric(6.4); }}>Simulate later photo</button>
+    <>
+      <div className={`view ${on ? 'live' : ''}`}>
+        <span className="camera-label">CAMERA PREVIEW</span>
+        <video ref={v} playsInline muted />
+        {err ? <div className="err"><b>⚠ Camera unavailable</b><span>Check camera access, then try again.</span></div>
+          : <><i className="oval" /><p className="tip">{msg}</p></>}
       </div>
-      <p className="note">{msg}</p>
-    </div>
+      <div className="shwrap">
+        {err ? <button className="btn" onClick={start}>Try again</button>
+          : <button className="shutter" aria-label={on ? 'Capture photo' : 'Start camera'} onClick={on ? capture : start} />}
+      </div>
+    </>
   );
 }
