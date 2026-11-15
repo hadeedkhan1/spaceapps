@@ -3,10 +3,12 @@ import { LineChart, Line, XAxis, YAxis, ReferenceLine, ResponsiveContainer, Cart
 import { HAZARDS, Hazard, State, Sys } from './contract';
 import { getState, sendAlert, actionFor } from './api';
 import BodyMap from './components/BodyMap';
+import type { Status as MapStatus, SystemId } from './components/BodyMap';
 import Selfie from './components/Selfie';
 
 type Tab = 'status' | 'dose' | 'earth' | 'checkin';
 type Phase = 'idle' | 'sent' | 'waiting' | 'acked' | 'escalated';
+type SolarScenario = 'quiet' | 'watch' | 'storm';
 const WORD = { green: 'Stable', yellow: 'Watch', red: 'Alert' };
 const GLYPH = { green: '✓', yellow: '⚠', red: '!' };
 const TREND = { up: '↗ Rising', flat: '→ Steady', down: '↘ Falling' };
@@ -30,6 +32,11 @@ const STEPS = ['Sent', 'Waiting', 'Acknowledged', 'Escalated'];
 const ACTIVE: Record<Phase, number> = { idle: 0, sent: 0, waiting: 1, acked: 2, escalated: 3 };
 const SOURCES = ['NOAA GOES proton flux', 'NASA DONKI', 'NASA MSL RAD', 'NASA-STD-3001', 'NASA Human Research Program', 'WESAD / PhysioNet'];
 const STATUS_ORDER = ['brain', 'eyes', 'heart', 'immune', 'bones', 'muscle'];
+const SOLAR_OUTLOOK: Record<SolarScenario, { title: string; severity: string; onset: string; prepare: string; duration: string; clear: string }> = {
+  quiet: { title: 'Quiet activity scenario', severity: 'LOW', onset: 'No event', prepare: '—', duration: 'No window', clear: '—' },
+  watch: { title: 'Elevated activity scenario', severity: 'WATCH', onset: '12–18 h', prepare: '12–18 h', duration: '~6 h', clear: '18–24 h' },
+  storm: { title: 'Solar event scenario', severity: 'HIGH', onset: '~4 h', prepare: 'Within ~4 h', duration: '~12 h', clear: '~16 h' },
+};
 
 function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: any }) {
   return (
@@ -54,6 +61,7 @@ export default function App() {
   const [stamp, setStamp] = useState('');
   const [delay, setDelay] = useState(1200);
   const [view, setView] = useState<'no' | 'sh'>('no');
+  const [solarScenario, setSolarScenario] = useState<SolarScenario>('watch');
   const [online, setOnline] = useState(navigator.onLine);
   const [face, setFace] = useState([{ day: 1, pct: 1 }, { day: 40, pct: 3 }, { day: 78, pct: 6 }, { day: 79, pct: 5 }, { day: 80, pct: 4 }]);
   const timers = useRef<any[]>([]);
@@ -71,8 +79,25 @@ export default function App() {
 
   const s = st.systems.find(x => x.id === sel)!;
   const by = (id: string) => st.systems.find(x => x.id === id)!;
+  const watchSystems = st.systems.filter(x => x.status === 'yellow');
+  const alertSystems = st.systems.filter(x => x.status === 'red');
+  const attentionSystems = [...alertSystems, ...watchSystems];
+  const watchNames = attentionSystems.map(x => x.name);
+  const watchSummary = watchNames.length === 1
+    ? `${watchNames[0]} is trending outside baseline.`
+    : watchNames.length > 1
+      ? `${watchNames.slice(0, -1).join(', ')} and ${watchNames[watchNames.length - 1]} are trending outside baseline.`
+      : 'All systems are within baseline.';
+  const mapStatus = (value: Sys['status']): MapStatus => ({ green: 'ok', yellow: 'watch', red: 'alert' } as Record<Sys['status'], MapStatus>)[value];
+  const bodyStatus: Record<SystemId, MapStatus> = {
+    brain: mapStatus(by('brain').status), eyes: mapStatus(by('eyes').status),
+    heart: mapStatus(by('heart').status), immune: mapStatus(by('immune').status),
+    arms: mapStatus(by('muscle').status), legs: mapStatus(by('bones').status),
+  };
+  const bodySelection: SystemId = sel === 'muscle' ? 'arms' : sel === 'bones' ? 'legs' : sel as SystemId;
   const dim = (x: Sys) => hz && !x.hazards.includes(hz);
   const pick = (id: string) => { setSel(id); setOpen(true); };
+  const pickBody = (id: SystemId) => setSel(id === 'arms' ? 'muscle' : id === 'legs' ? 'bones' : id);
   const plan = actionFor(delay);
 
   async function send() {
@@ -89,6 +114,7 @@ export default function App() {
   const mSv = view === 'sh' ? cur.sheltered : cur.ignored;
   const pct = Math.round((mSv / st.dose.limit) * 100);
   const C = 2 * Math.PI * 70;
+  const solar = SOLAR_OUTLOOK[solarScenario];
 
   const sub = { idle: 'Connected, across the distance', sent: `Sent at ${stamp} · encrypted`, waiting: `Earliest reply window · ${stamp}`,
     acked: `Acknowledged at ${stamp}`, escalated: `Escalated onboard at ${stamp}` }[phase];
@@ -108,14 +134,23 @@ export default function App() {
       {tab === 'status' && <>
         <div className="top"><h1>Status</h1><button className="x" aria-label="Sources and safety" onClick={() => setInfo(true)}>ⓘ</button></div>
         <p className="sub">Mission day {st.day}</p>
+        <section className="brief card" aria-label="Mission overview">
+          <div className="brief-top"><span className="eyebrow">NOW · MISSION BRIEF</span><span className="live-tag"><i /> LIVE</span></div>
+          <div className="brief-main"><div><strong>{alertSystems.length ? `${alertSystems.length} active alert${alertSystems.length > 1 ? 's' : ''}` : watchSystems.length ? `${watchSystems.length} systems on watch` : 'All systems stable'}</strong><p>{watchSummary}</p></div><span className={`brief-count ${alertSystems.length ? 'has-alert' : ''}`}>{String(attentionSystems.length).padStart(2, '0')}<small>{alertSystems.length ? 'ALERT' : 'WATCH'}</small></span></div>
+          <button className="brief-action" onClick={() => pick(attentionSystems[0]?.id || 'heart')}>Review priority system <span>↗</span></button>
+        </section>
         <div className="chips" role="group" aria-label="Hazard filter">
           {[null, ...HAZARDS].map(h => <button key={h || 'all'} className={`chip ${hz === h ? 'on' : ''}`} onClick={() => setHz(h as Hazard | null)}>{h ? h[0].toUpperCase() + h.slice(1) : 'All'}</button>)}
         </div>
-        <div className="bodycard">
-          <div className="col">{['brain', 'heart', 'bones'].map(chip)}</div>
-          <BodyMap systems={st.systems} sel={sel} onSel={pick} hz={hz} />
-          <div className="col">{['eyes', 'immune', 'muscle'].map(chip)}</div>
-        </div>
+        <section className="body-panel" aria-label="Interactive body systems">
+          <div className="section-head"><div><span className="eyebrow">BODY SYSTEMS</span><strong>Daily readout</strong></div><span className="tap-hint">Tap a region</span></div>
+          <div className="bodycard">
+            <div className="col">{['brain', 'heart', 'bones'].map(chip)}</div>
+            <div className="map-stage"><span className="map-orbit" /><BodyMap status={bodyStatus} selected={bodySelection} onSelect={pickBody} height={235} /></div>
+            <div className="col">{['eyes', 'immune', 'muscle'].map(chip)}</div>
+          </div>
+          <div className="body-selection"><span className={`selection-dot ${s.status}`} /><div><b>{s.name}</b><small>{TREND[s.trend]} · {s.z.toFixed(1)} SD from baseline</small></div><button onClick={() => setOpen(true)}>Details <span>›</span></button></div>
+        </section>
         <ul className="card list">
           {STATUS_ORDER.map(id => by(id)).map(x => (
             <li key={x.id} className={dim(x) ? 'dim' : ''}><button onClick={() => pick(x.id)}>
@@ -136,6 +171,19 @@ export default function App() {
           </svg>
           <p className="mut">{Math.round(mSv)} / {st.dose.limit} mSv · Illustrative career model</p>
         </div>
+        <section className={`card solar-card ${solarScenario}`} aria-label="Solar storm scenario forecast">
+          <div className="solar-heading"><div><p className="eyebrow">SPACE WEATHER</p><h2>Solar outlook</h2></div><span className="simulated-tag">SIMULATED</span></div>
+          <p className="solar-feed">No live forecast feed connected</p>
+          <div className="solar-event" key={solarScenario}><span className="solar-symbol" aria-hidden="true">☼</span><div><b>{solar.title}</b><small>{solarScenario === 'quiet' ? 'No event in this scenario' : `Possible onset · ${solar.onset}`}</small></div><span className="solar-severity">{solar.severity}</span></div>
+          <div className={`solar-track ${solarScenario}`} aria-label={`Scenario timeline: onset ${solar.onset}, estimated shelter duration ${solar.duration}`}>
+            <div className="track-line"><i /></div><div className="track-point now"><i /><small>Now</small></div><div className="track-point onset"><i /><small>Onset</small></div><div className="track-point clear"><i /><small>Clear</small></div>
+          </div>
+          <div className="solar-estimates"><div><small>PREPARE</small><b>{solar.prepare}</b></div><div><small>EST. SHELTER WINDOW</small><b>{solar.duration}</b></div><div><small>EST. CLEAR</small><b>{solar.clear}</b></div></div>
+          <div className="seg scenario-picker" role="group" aria-label="Illustrative solar scenario">
+            {([['quiet', 'Quiet'], ['watch', 'Elevated'], ['storm', 'Storm']] as [SolarScenario, string][]).map(([value, label]) => <button key={value} className={solarScenario === value ? 'on' : ''} aria-pressed={solarScenario === value} onClick={() => setSolarScenario(value)}>{label}</button>)}
+          </div>
+          <p className="solar-foot">Training estimate only. Real event timing and shelter decisions depend on onboard radiation measurements and mission rules.</p>
+        </section>
         <div className="card">
           <h2>A safer trajectory</h2>
           <div className="seg"><button className={view === 'no' ? 'on' : ''} onClick={() => setView('no')}>No shelter</button>
