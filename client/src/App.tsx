@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, ReferenceLine, ResponsiveContainer, CartesianGrid } from 'recharts';
-import { HAZARDS, Hazard, State, Sys } from './contract';
-import { getState, sendAlert, actionFor } from './api';
+import { CATEGORY_META, HAZARDS, Hazard, Session, State, Sys } from './contract';
+import type { CategoryScore, ScoreResult } from './contract';
+import { actionFor, loadState, readSession, saveSession, sendAlert } from './api';
+import Auth from './components/Auth';
+import ReadingLogger from './components/ReadingLogger';
 import BodyMap from './components/BodyMap';
 import type { Status as MapStatus, SystemId } from './components/BodyMap';
 import Selfie from './components/Selfie';
@@ -9,8 +12,8 @@ import Selfie from './components/Selfie';
 type Tab = 'status' | 'dose' | 'earth' | 'checkin';
 type Phase = 'idle' | 'sent' | 'waiting' | 'acked' | 'escalated';
 type SolarScenario = 'quiet' | 'watch' | 'storm';
-const WORD = { green: 'Stable', yellow: 'Watch', red: 'Alert' };
-const GLYPH = { green: '✓', yellow: '⚠', red: '!' };
+const WORD = { green: 'Stable', yellow: 'Watch', red: 'Alert', grey: 'No data' };
+const GLYPH = { green: '✓', yellow: '⚠', red: '!', grey: '·' };
 const TREND = { up: '↗ Rising', flat: '→ Steady', down: '↘ Falling' };
 const TABS: [Tab, string][] = [['status', 'Status'], ['dose', 'Dose'], ['earth', 'Earth'], ['checkin', 'Check-in']];
 const ICON: Record<Tab, any> = {
@@ -38,6 +41,15 @@ const SOLAR_OUTLOOK: Record<SolarScenario, { title: string; severity: string; on
   storm: { title: 'Solar event scenario', severity: 'HIGH', onset: '~4 h', prepare: 'Within ~4 h', duration: '~12 h', clear: '~16 h' },
 };
 
+function describe(r: CategoryScore) {
+  const { unit } = CATEGORY_META[r.category];
+  if (r.status === 'scored') {
+    return `Baseline ${r.baseline} ${unit} · recent ${r.recent} ${unit} · ${r.before_days} baseline days, ${r.after_days} after`;
+  }
+  if (r.status === 'needs_before_data') return `${r.before_days ?? 0} of 2 baseline days logged`;
+  return 'Waiting for a reading after the change';
+}
+
 function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: any }) {
   return (
     <div className="scrim" onClick={onClose}>
@@ -51,7 +63,10 @@ function Sheet({ title, onClose, children }: { title: string; onClose: () => voi
 }
 
 export default function App() {
+  const [session, setSession] = useState<Session | null>(readSession);
   const [st, setSt] = useState<State | null>(null);
+  const [loadError, setLoadError] = useState('');
+  const [reload, setReload] = useState(0);
   const [tab, setTab] = useState<Tab>('status');
   const [sel, setSel] = useState('heart');
   const [open, setOpen] = useState(false);
@@ -66,12 +81,38 @@ export default function App() {
   const [face, setFace] = useState([{ day: 1, pct: 1 }, { day: 40, pct: 3 }, { day: 78, pct: 6 }, { day: 79, pct: 5 }, { day: 80, pct: 4 }]);
   const timers = useRef<any[]>([]);
   const clear = () => { timers.current.forEach(clearTimeout); timers.current = []; };
+
   useEffect(() => {
-    getState().then(setSt);
+    if (!session) {
+      setSt(null);
+      return;
+    }
+    let alive = true;
+    setLoadError('');
+    loadState(session.userid)
+      .then(next => { if (alive) setSt(next); })
+      .catch(err => { if (alive) setLoadError((err as Error).message); });
+    return () => { alive = false; };
+  }, [session, reload]);
+
+  useEffect(() => {
     const on = () => setOnline(true), off = () => setOnline(false);
     addEventListener('online', on); addEventListener('offline', off);
     return () => { removeEventListener('online', on); removeEventListener('offline', off); clear(); };
   }, []);
+
+  const signOut = () => { saveSession(null); setSession(null); setSt(null); setLoadError(''); };
+
+  if (!session) return <Auth onSession={setSession} />;
+
+  if (loadError) return (
+    <div className="app">
+      <div className="top"><h1>Status</h1></div>
+      <div className="card"><h2>Can’t reach your baseline</h2><p className="mut">{loadError}</p></div>
+      <button className="btn" onClick={() => setReload(n => n + 1)}>Try again</button>
+      <button className="link" onClick={signOut}>Sign out</button>
+    </div>
+  );
 
   if (!st) return (
     <div className="app"><h1>Status</h1><div className="card"><h2>Learning your baseline</h2><p className="mut">Comparing your latest resting readings…</p></div>
@@ -79,16 +120,21 @@ export default function App() {
 
   const s = st.systems.find(x => x.id === sel)!;
   const by = (id: string) => st.systems.find(x => x.id === id)!;
+  const rows = s.categories.map(c => st.results[c]).filter((r): r is CategoryScore => !!r);
   const watchSystems = st.systems.filter(x => x.status === 'yellow');
   const alertSystems = st.systems.filter(x => x.status === 'red');
+  const pendingSystems = st.systems.filter(x => x.status === 'grey');
   const attentionSystems = [...alertSystems, ...watchSystems];
+  const openCount = attentionSystems.length + pendingSystems.length;
   const watchNames = attentionSystems.map(x => x.name);
   const watchSummary = watchNames.length === 1
     ? `${watchNames[0]} is trending outside baseline.`
     : watchNames.length > 1
       ? `${watchNames.slice(0, -1).join(', ')} and ${watchNames[watchNames.length - 1]} are trending outside baseline.`
-      : 'All systems are within baseline.';
-  const mapStatus = (value: Sys['status']): MapStatus => ({ green: 'ok', yellow: 'watch', red: 'alert' } as Record<Sys['status'], MapStatus>)[value];
+      : pendingSystems.length
+        ? 'Log baseline readings to score every system.'
+        : 'All systems are within baseline.';
+  const mapStatus = (value: Sys['status']): MapStatus => ({ green: 'ok', yellow: 'watch', red: 'alert', grey: 'idle' } as Record<Sys['status'], MapStatus>)[value];
   const bodyStatus: Record<SystemId, MapStatus> = {
     brain: mapStatus(by('brain').status), eyes: mapStatus(by('eyes').status),
     heart: mapStatus(by('heart').status), immune: mapStatus(by('immune').status),
@@ -99,10 +145,11 @@ export default function App() {
   const pick = (id: string) => { setSel(id); setOpen(true); };
   const pickBody = (id: SystemId) => setSel(id === 'arms' ? 'muscle' : id === 'legs' ? 'bones' : id);
   const plan = actionFor(delay);
+  const detail = (x: Sys) => x.status === 'grey' ? 'No readings yet' : `${TREND[x.trend]} · ${x.z.toFixed(1)} SD from baseline`;
 
   async function send() {
     clear(); setPhase('sent'); setStamp(hm());
-    await sendAlert(`${st!.alert.text} Plan: ${plan}`);
+    await sendAlert(`${st.alert.text} Plan: ${plan}`);
     timers.current.push(setTimeout(() => { setPhase('waiting'); setStamp(hm(new Date(Date.now() + delay * 2000))); }, 1500));
     timers.current.push(setTimeout(() => { setPhase('escalated'); setStamp(hm()); }, 21500));
   }
@@ -133,11 +180,11 @@ export default function App() {
       <div className="ios-status" aria-hidden="true"><b>9:41</b><span className="island" /><svg className="status-icons" viewBox="0 0 72 18"><path d="M1 16h4V11H1zm7 0h4V8H8zm7 0h4V5h-4z" fill="currentColor"/><path d="M27 7a13 13 0 0 1 17 0M30 10a9 9 0 0 1 11 0m-8 3a4 4 0 0 1 5 0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><rect x="52" y="4" width="17" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5"/><rect x="69.5" y="7" width="2" height="4" rx="1" fill="currentColor"/><path d="M54.5 6.5h11v5h-11z" fill="currentColor"/></svg></div>
       {tab === 'status' && <>
         <div className="top"><h1>Status</h1><button className="x" aria-label="Sources and safety" onClick={() => setInfo(true)}>ⓘ</button></div>
-        <p className="sub">Mission day {st.day}</p>
+        <p className="sub">Mission day {st.day} · {st.overall.status === 'scored' ? `Score ${st.overall.score}/10` : 'Score pending'}</p>
         <section className="brief card" aria-label="Mission overview">
           <div className="brief-top"><span className="eyebrow">NOW · MISSION BRIEF</span><span className="live-tag"><i /> LIVE</span></div>
-          <div className="brief-main"><div><strong>{alertSystems.length ? `${alertSystems.length} active alert${alertSystems.length > 1 ? 's' : ''}` : watchSystems.length ? `${watchSystems.length} systems on watch` : 'All systems stable'}</strong><p>{watchSummary}</p></div><span className={`brief-count ${alertSystems.length ? 'has-alert' : ''}`}>{String(attentionSystems.length).padStart(2, '0')}<small>{alertSystems.length ? 'ALERT' : 'WATCH'}</small></span></div>
-          <button className="brief-action" onClick={() => pick(attentionSystems[0]?.id || 'heart')}>Review priority system <span>↗</span></button>
+          <div className="brief-main"><div><strong>{alertSystems.length ? `${alertSystems.length} active alert${alertSystems.length > 1 ? 's' : ''}` : watchSystems.length ? `${watchSystems.length} systems on watch` : pendingSystems.length ? `${pendingSystems.length} systems need data` : 'All systems stable'}</strong><p>{watchSummary}</p></div><span className={`brief-count ${alertSystems.length ? 'has-alert' : ''}`}>{String(openCount).padStart(2, '0')}<small>{alertSystems.length ? 'ALERT' : watchSystems.length ? 'WATCH' : 'OPEN'}</small></span></div>
+          <button className="brief-action" onClick={() => pick(attentionSystems[0]?.id || pendingSystems[0]?.id || 'heart')}>Review priority system <span>↗</span></button>
         </section>
         <div className="chips" role="group" aria-label="Hazard filter">
           {[null, ...HAZARDS].map(h => <button key={h || 'all'} className={`chip ${hz === h ? 'on' : ''}`} onClick={() => setHz(h as Hazard | null)}>{h ? h[0].toUpperCase() + h.slice(1) : 'All'}</button>)}
@@ -149,12 +196,12 @@ export default function App() {
             <div className="map-stage"><span className="map-orbit" /><BodyMap status={bodyStatus} selected={bodySelection} onSelect={pickBody} height={235} /></div>
             <div className="col">{['eyes', 'immune', 'muscle'].map(chip)}</div>
           </div>
-          <div className="body-selection"><span className={`selection-dot ${s.status}`} /><div><b>{s.name}</b><small>{TREND[s.trend]} · {s.z.toFixed(1)} SD from baseline</small></div><button onClick={() => setOpen(true)}>Details <span>›</span></button></div>
+          <div className="body-selection"><span className={`selection-dot ${s.status}`} /><div><b>{s.name}</b><small>{detail(s)}</small></div><button onClick={() => setOpen(true)}>Details <span>›</span></button></div>
         </section>
         <ul className="card list">
           {STATUS_ORDER.map(id => by(id)).map(x => (
             <li key={x.id} className={dim(x) ? 'dim' : ''}><button onClick={() => pick(x.id)}>
-              <span className="name"><svg className={`sys-icon ${x.status}`} viewBox="0 0 24 24" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{SYS_ICON[x.id]}</svg><span><b>{x.name}</b><small>{x.z.toFixed(1)} SD from baseline</small></span></span>
+              <span className="name"><svg className={`sys-icon ${x.status}`} viewBox="0 0 24 24" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{SYS_ICON[x.id]}</svg><span><b>{x.name}</b><small>{detail(x)}</small></span></span>
               <span className="r"><em className={x.status}>{GLYPH[x.status]} {WORD[x.status]}</em><small>{TREND[x.trend]} ›</small></span></button></li>))}
         </ul>
       </>}
@@ -228,6 +275,7 @@ export default function App() {
 
       {tab === 'checkin' && <>
         <h1>Check-in</h1><p className="sub">A moment for your baseline</p>
+        <ReadingLogger userid={session.userid} onSaved={() => setReload(n => n + 1)} />
         <Selfie onMetric={p => setFace(f => [...f, { day: f[f.length - 1].day + 1, pct: p }])} />
         <div className="card checkin-chart"><h2>Face puffiness vs day one</h2>
           <ResponsiveContainer width="100%" height={50}><LineChart data={face}><XAxis dataKey="day" ticks={[1, 40, 80]} tickFormatter={d => d === 1 ? 'Day 1' : `${d}`} axisLine={false} tickLine={false} tick={{ fill: 'var(--mute)', fontSize: 10 }} /><Line dataKey="pct" stroke="var(--blue)" strokeWidth={2} dot={false} /></LineChart></ResponsiveContainer>
@@ -243,13 +291,30 @@ export default function App() {
       <div className="ios-home" aria-hidden="true" />
 
       {open && <Sheet title={s.name} onClose={() => setOpen(false)}>
+        {rows.length > 0 && <>
+          <h3>Your readings</h3>
+          {rows.map(r => (
+            <div key={r.category} className="live">
+              <div className="between"><b>{CATEGORY_META[r.category].label}</b><em className={r.color}>{r.status === 'scored' ? `${r.score}/10` : 'Pending'}</em></div>
+              <p className="mut">{describe(r)}</p>
+              {r.explanation && <p>{r.explanation}</p>}
+              {!!r.explanation_plan?.length && <ul className="srcs">{r.explanation_plan.map(item => <li key={item}>{item}</li>)}</ul>}
+              {!!r.explanation_watch_for?.length && <p className="mut">Watch for {r.explanation_watch_for.join(', ')}.</p>}
+              {r.explanation_caveat && <p className="mut">{r.explanation_caveat}</p>}
+            </div>
+          ))}
+        </>}
         <h3>How it’s measured</h3><p>{s.measure}</p>
         <h3>How spaceflight changes it</h3><p>{s.change}</p>
         <h3>When to escalate</h3><p>{s.escalate}</p>
         <p className="mut">Source: {s.source}. Illustrative baseline; clinician-defined thresholds.</p></Sheet>}
       {info && <Sheet title="Sources and safety" onClose={() => setInfo(false)}>
         <ul className="srcs">{SOURCES.map(x => <li key={x}>{x}</li>)}</ul>
-        <p className="mut">Prototype, not a diagnosis. Simulated drifts are labeled as simulated. Real astronaut garment data is not public.</p></Sheet>}
+        <p className="mut">Prototype, not a diagnosis. Simulated drifts are labeled as simulated. Real astronaut garment data is not public.</p>
+        <h3>Account</h3>
+        <p className="mut">{session.phone}</p>
+        <button className="link" onClick={signOut}>Sign out</button>
+      </Sheet>}
     </div>
   );
 }

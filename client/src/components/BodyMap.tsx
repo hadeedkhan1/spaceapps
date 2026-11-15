@@ -1,15 +1,16 @@
-/** @jsxRuntime classic */
-import React from "react";
 
-// Paths copied from the Figma export (Status screen, node 0-1).
-// Coordinates are the original 393x852 frame; viewBox crops to the figure.
+
+
+
+
 export type SystemId = "brain" | "eyes" | "heart" | "immune" | "arms" | "legs";
-export type Status = "ok" | "watch" | "alert";
+export type Status = "ok" | "watch" | "alert" | "idle";
 
 const COLOR: Record<Status, string> = {
   ok: "#30D158",
   watch: "#FFD60A",
   alert: "#FF453A",
+  idle: "#5C6068",
 };
 
 const SILHOUETTE =
@@ -17,7 +18,7 @@ const SILHOUETTE =
 const TORSO =
   "M196.5 96.225C191.162 96.225 184.3 98.5125 182.775 103.85C181.25 110.713 183.537 117.575 184.3 124.438C185.062 132.063 182.775 140.45 182.775 148.075C182.775 155.7 187.35 162.563 192.687 164.088C194.975 164.85 195.737 161.038 196.5 158.75C197.262 161.038 198.025 164.85 200.312 164.088C205.65 162.563 210.225 155.7 210.225 148.075C210.225 140.45 207.937 132.063 208.7 124.438C209.462 117.575 211.75 110.713 210.225 103.85C208.7 98.5125 201.837 96.225 196.5 96.225Z";
 
-// Marker regions (tappable). Colour comes from status, not from the file.
+
 const REGIONS: { id: SystemId; d: string[] }[] = [
   {
     id: "brain",

@@ -1,0 +1,12 @@
+{
+  "name": "spaceapps",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,green \"python backend/main.py\" \"cd client && bun run dev\"",
+    "dev:api": "python backend/main.py",
+    "dev:web": "cd client && bun run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7"
+  }
+}
