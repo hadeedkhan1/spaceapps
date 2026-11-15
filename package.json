@@ -1,0 +1,14 @@
+{
+  "name": "spaceapps",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c cyan,green \"python -m uvicorn backend.main:app --reload\" \"cd client && bun run dev\"",
+    "dev:api": "python -m uvicorn backend.main:app --reload",
+    "dev:web": "cd client && bun run dev",
+    "test": "python -m unittest backend.test_scoring -v"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.7"
+  },
+  "description": "Orbital Twin: astronaut health self-assessment"
+}

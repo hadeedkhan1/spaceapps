@@ -1,0 +1,11 @@
+node_modules/
+bun.lock
+__pycache__/
+*.pyc
+client/node_modules/
+client/bun.lock
+client/package-lock.json
+client/dist/
+.env
+client/.env
+.freebuff/
