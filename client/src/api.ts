@@ -54,6 +54,10 @@ export function logIn(phone: string, password: string) {
   return request<{ userid: string }>('/login', { phone, password });
 }
 
+export function startDemo() {
+  return request<{ userid: string; phone: string; demo: boolean }>('/demo', {});
+}
+
 export function addReading(reading: Reading) {
   return request<{ ok: boolean }>('/readings', reading);
 }
@@ -64,7 +68,7 @@ export function getStatus(userid: string, category: Category | 'overall') {
   );
 }
 
-export async function loadState(userid: string): Promise<State> {
+export async function loadState(userid: string, demo = false): Promise<State> {
   const [overall, categoryScores] = await Promise.all([
     getStatus(userid, 'overall'),
     Promise.all(CATEGORY_IDS.map(category => getStatus(userid, category))),
@@ -80,6 +84,7 @@ export async function loadState(userid: string): Promise<State> {
     overall,
     dose: { limit: CAREER_LIMIT, series: doseSeries() },
     alert: buildAlert(overall),
+    demo,
   };
 }
 
@@ -105,6 +110,8 @@ function buildAlert(overall: ScoreResult): State['alert'] {
       text: overall.explanation
         || 'Log at least two baseline days, then a reading after the change, to unlock your first score.',
       cites: ALERT_CITES,
+      explanation_source: overall.explanation_source,
+      explanation_model: overall.explanation_model,
     };
   }
   const label = CATEGORY_META[worst.category].label;
@@ -112,6 +119,8 @@ function buildAlert(overall: ScoreResult): State['alert'] {
     title: `${label} ${worst.color === 'red' ? 'needs attention' : 'on watch'}`,
     text: `${overall.explanation ?? ''} Overall ${overall.score}/10.`,
     cites: ALERT_CITES,
+    explanation_source: overall.explanation_source,
+    explanation_model: overall.explanation_model,
   };
 }
 

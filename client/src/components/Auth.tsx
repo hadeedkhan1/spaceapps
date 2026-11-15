@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react';
-import { createAccount, logIn, saveSession } from '../api';
+import { createAccount, logIn, saveSession, startDemo } from '../api';
 import type { Session } from '../contract';
 
 export default function Auth({ onSession }: { onSession: (session: Session) => void }) {
@@ -7,6 +7,7 @@ export default function Auth({ onSession }: { onSession: (session: Session) => v
   const [phone, setPhone] = useState('+1');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
   const [error, setError] = useState('');
 
   async function submit(event: FormEvent) {
@@ -27,6 +28,21 @@ export default function Auth({ onSession }: { onSession: (session: Session) => v
     }
   }
 
+  async function enterDemo() {
+    setDemoBusy(true);
+    setError('');
+    try {
+      const result = await startDemo();
+      const session = { userid: result.userid, phone: result.phone, demo: true };
+      saveSession(session);
+      onSession(session);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDemoBusy(false);
+    }
+  }
+
   function switchMode() {
     setMode(mode === 'login' ? 'signup' : 'login');
     setError('');
@@ -36,6 +52,10 @@ export default function Auth({ onSession }: { onSession: (session: Session) => v
     <div className="app">
       <div className="top"><h1>Orbital Twin</h1><span className="eyebrow blue">BASELINE</span></div>
       <p className="sub">Your own normal, scored before and after a change.</p>
+      <div className="demo-entry card">
+        <div><b>Explore the simulated demo</b><p className="mut">7 baseline days · 5 after-change days · sustained heart-rate CUSUM alert</p></div>
+        <button className="btn" type="button" onClick={enterDemo} disabled={demoBusy || busy}>{demoBusy ? 'Preparing demo…' : 'Open demo account'}</button>
+      </div>
       <form className="card" onSubmit={submit}>
         <p className="eyebrow">{mode === 'login' ? 'SIGN IN' : 'CREATE ACCOUNT'}</p>
         <div className="field">

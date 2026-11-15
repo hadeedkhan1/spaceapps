@@ -1,7 +1,7 @@
 import os
 import secrets
 import sys
-from datetime import datetime
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -33,6 +33,7 @@ def get_db():
 app = FastAPI(title="riverhacks 26 backend api")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
+DEMO_PHONE = "+15555550199"
 
 
 class Credentials(BaseModel):
@@ -58,6 +59,45 @@ def clean_phone(raw):
 def require_user(db, userid):
     if not db.table("users").select("user_id").eq("user_id", userid).execute().data:
         raise HTTPException(404, "Unknown userid. Sign up first.")
+
+
+@app.post("/demo")
+def demo_account():
+    """Create/reuse a clearly simulated account with an immediate HR trend."""
+    db = get_db()
+    users = db.table("users").select("user_id").eq("phone", DEMO_PHONE).execute().data
+    if users:
+        userid = users[0]["user_id"]
+    else:
+        userid = "u_demo_" + secrets.token_hex(6)
+        db.table("users").insert({
+            "user_id": userid,
+            "phone": DEMO_PHONE,
+            "password_hash": hash_password(secrets.token_urlsafe(32)),
+        }).execute()
+
+    readings = (db.table("readings").select("phase,recorded_at")
+                .eq("user_id", userid).eq("category", "heart_rate").execute().data)
+    phase_days = {
+        phase: {str(row["recorded_at"])[:10] for row in readings if row["phase"] == phase and row.get("recorded_at")}
+        for phase in ("before", "after")
+    }
+    if len(phase_days["before"]) < 7 or len(phase_days["after"]) < 5:
+        db.table("readings").delete().eq("user_id", userid).eq("category", "heart_rate").execute()
+        today = datetime.now(timezone.utc).date()
+        baseline = [60, 61, 60, 62, 61, 60, 61]
+        after = [71, 72, 73, 74, 75]
+        seed = []
+        for offset, value in zip(range(12, 5, -1), baseline):
+            day = today - timedelta(days=offset)
+            seed.append({"user_id": userid, "category": "heart_rate", "value": value,
+                         "phase": "before", "recorded_at": datetime.combine(day, time(8), timezone.utc).isoformat()})
+        for offset, value in zip(range(5, 0, -1), after):
+            day = today - timedelta(days=offset)
+            seed.append({"user_id": userid, "category": "heart_rate", "value": value,
+                         "phase": "after", "recorded_at": datetime.combine(day, time(8), timezone.utc).isoformat()})
+        db.table("readings").insert(seed).execute()
+    return {"userid": userid, "phone": "Simulated demo account", "demo": True}
 
 
 @app.post("/signup", status_code=201)
@@ -111,7 +151,7 @@ def get_status(userid: str = Query(...), category: str = Query("overall")):
                               [x for x in mine if x["phase"] == "after"])
 
     result = score_overall([one(c) for c in CATEGORIES]) if category == "overall" else one(category)
-    result.update(explain(result))
+    result.update(explain(result, use_llm=result.get("status") == "scored"))
     return result
 
 

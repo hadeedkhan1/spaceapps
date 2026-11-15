@@ -2,7 +2,7 @@ export type Status = 'green' | 'yellow' | 'red' | 'grey';
 export type Hazard = 'radiation' | 'isolation' | 'distance' | 'gravity' | 'environment';
 export const HAZARDS: Hazard[] = ['radiation', 'isolation', 'distance', 'gravity', 'environment'];
 
-export type Category = 'sleep_hours' | 'mood' | 'hrv' | 'heart_rate' | 'temperature' | 'glucose';
+export type Category = 'sleep_hours' | 'mood' | 'hrv' | 'heart_rate' | 'temperature' | 'glucose' | 'vision_symptoms';
 export type ReadingPhase = 'before' | 'after';
 
 export const CATEGORY_META: Record<Category, { label: string; unit: string; step: number; sample: number }> = {
@@ -12,6 +12,7 @@ export const CATEGORY_META: Record<Category, { label: string; unit: string; step
   heart_rate: { label: 'Resting HR', unit: 'bpm', step: 1, sample: 62 },
   temperature: { label: 'Temperature', unit: '°C', step: 0.1, sample: 36.8 },
   glucose: { label: 'Glucose', unit: 'mg/dL', step: 1, sample: 92 },
+  vision_symptoms: { label: 'Vision symptoms', unit: '0–10', step: 1, sample: 0 },
 };
 export const CATEGORY_IDS = Object.keys(CATEGORY_META) as Category[];
 
@@ -52,6 +53,8 @@ export interface ScoreResult {
   explanation_urgency?: 'routine' | 'soon' | 'urgent';
   explanation_caveat?: string;
   explanation_source?: 'openrouter' | 'fallback';
+  explanation_model?: string;
+  explanation_error?: string;
 }
 
 export interface CategoryScore extends ScoreResult {
@@ -69,7 +72,7 @@ export interface SystemMeta {
   source: string;
 }
 
-const SOURCE = 'NASA HRP / NASA-STD-3001';
+const SOURCE = 'Experimental self-report indicator; see Sources and safety';
 
 export const SYSTEM_META: SystemMeta[] = [
   {
@@ -81,11 +84,11 @@ export const SYSTEM_META: SystemMeta[] = [
     source: SOURCE,
   },
   {
-    id: 'eyes', name: 'Eyes', categories: ['glucose'],
+    id: 'eyes', name: 'Eyes', categories: ['vision_symptoms'],
     hazards: ['gravity', 'environment'],
-    measure: 'Blood glucose readings alongside the daily selfie puffiness trend.',
-    change: 'Fluid shifts toward the head cause facial puffiness, and glucose swings blur vision.',
-    escalate: 'Blurred vision, headaches, or a sustained puffiness rise.',
+    measure: 'Daily self-report of visual symptoms such as blur, spots, or field changes. This is an experimental indicator, not an eye examination.',
+    change: 'Spaceflight-associated fluid shifts can affect ocular structures and vision; this tracker does not assess the cause.',
+    escalate: 'New or worsening visual symptoms should be reviewed under the mission medical protocol.',
     source: SOURCE,
   },
   {
@@ -140,20 +143,22 @@ export interface State {
   results: Partial<Record<Category, CategoryScore>>;
   overall: ScoreResult;
   dose: { limit: number; series: DosePt[] };
-  alert: { title?: string; text: string; cites: { title: string; url: string }[] };
+  alert: { title?: string; text: string; cites: { title: string; url: string }[]; explanation_source?: 'openrouter' | 'fallback'; explanation_model?: string };
+  demo?: boolean;
 }
 
 export interface Session {
   userid: string;
   phone: string;
+  demo?: boolean;
 }
 
 export const MISSION_DAY = 80;
 export const CAREER_LIMIT = 600;
 
 export const ALERT_CITES = [
-  { title: 'NASA HRP · Cardiovascular', url: 'https://www.nasa.gov/hrp/' },
-  { title: 'PhysioNet · Signal context', url: 'https://physionet.org/' },
+  { title: 'NASA · Cardiovascular monitoring in microgravity', url: 'https://www.nasa.gov/wp-content/uploads/2022/03/iss_technical_publication_030116.pdf' },
+  { title: 'UCI · WESAD wearable-signal dataset', url: 'https://archive.ics.uci.edu/dataset/465/wesad' },
 ];
 
 export function doseSeries(): DosePt[] {

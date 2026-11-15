@@ -69,7 +69,7 @@ export default function ReadingLogger({ userid, onSaved }: { userid: string; onS
       </div>
       {status && <p className={status.kind === 'error' ? 'err-line' : 'mut'}>{status.text}</p>}
       <button className="btn" disabled={busy}>{busy ? 'Saving…' : 'Save reading'}</button>
-      <p className="mut">Two baseline days unlock a score; keep logging after the change.</p>
+      <p className="mut">Experimental personal-baseline trend indicator. Two baseline days and one after-change reading unlock an initial score; continue logging for a steadier comparison.</p>
     </form>
   );
 }

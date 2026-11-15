@@ -30,10 +30,19 @@ const SYS_ICON: Record<string, any> = {
   muscle: <path d="M5 13c1-2 2-4 4-5l2 3 2-1 1-4 2 1 1 5 3 1v4c-4 3-12 2-15-1-2-2-1-4 0-6z" />
 };
 const fmt = (s: number) => (s < 60 ? `${s} s` : `${Math.round(s / 60)} min`);
+const fmtDemo = (ms: number) => ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
 const hm = (d = new Date()) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const STEPS = ['Sent', 'Waiting', 'Acknowledged', 'Escalated'];
 const ACTIVE: Record<Phase, number> = { idle: 0, sent: 0, waiting: 1, acked: 2, escalated: 3 };
-const SOURCES = ['NOAA GOES proton flux', 'NASA DONKI', 'NASA MSL RAD', 'NASA-STD-3001', 'NASA Human Research Program', 'WESAD / PhysioNet'];
+const SOURCES = [
+  { title: 'NASA Twins Study', url: 'https://www.nasa.gov/humans-in-space/twins-study/about/', supports: 'Longitudinal personal-baseline research context; it does not validate this app’s score.' },
+  { title: 'NASA cardiovascular monitoring in microgravity', url: 'https://www.nasa.gov/wp-content/uploads/2022/03/iss_technical_publication_030116.pdf', supports: 'Heart-rate and HRV research context.' },
+  { title: 'NASA astronaut vision and SANS research', url: 'https://www.nasa.gov/missions/station/iss-research/science-in-space-july-28-2023-astronaut-vision/', supports: 'Ocular health and visual-symptom context for the Eyes indicator.' },
+  { title: 'NOAA GOES proton flux', url: 'https://www.swpc.noaa.gov/products/goes-proton-flux', supports: 'Solar proton observations; this prototype does not connect to the live feed.' },
+  { title: 'NASA MSL Radiation Assessment Detector data', url: 'https://data.nasa.gov/dataset/msl-mars-radiation-assessment-detector-edr-964e9', supports: 'Radiation context for the illustrative dose model; not a crew dosimeter feed.' },
+  { title: 'NASA Human Rating Guidance', url: 'https://www.nasa.gov/human-rating-guidance/', supports: 'Standards reference only; the prototype does not use its limits as personal thresholds.' },
+  { title: 'UCI WESAD wearable dataset', url: 'https://archive.ics.uci.edu/dataset/465/wesad', supports: 'Wearable-signal research context; not astronaut validation data.' },
+];
 const STATUS_ORDER = ['brain', 'eyes', 'heart', 'immune', 'bones', 'muscle'];
 const SOLAR_OUTLOOK: Record<SolarScenario, { title: string; severity: string; onset: string; prepare: string; duration: string; clear: string }> = {
   quiet: { title: 'Quiet activity scenario', severity: 'LOW', onset: 'No event', prepare: '—', duration: 'No window', clear: '—' },
@@ -89,7 +98,7 @@ export default function App() {
     }
     let alive = true;
     setLoadError('');
-    loadState(session.userid)
+    loadState(session.userid, session.demo)
       .then(next => { if (alive) setSt(next); })
       .catch(err => { if (alive) setLoadError((err as Error).message); });
     return () => { alive = false; };
@@ -149,9 +158,10 @@ export default function App() {
 
   async function send() {
     clear(); setPhase('sent'); setStamp(hm());
-    await sendAlert(`${st.alert.text} Plan: ${plan}`);
-    timers.current.push(setTimeout(() => { setPhase('waiting'); setStamp(hm(new Date(Date.now() + delay * 2000))); }, 1500));
-    timers.current.push(setTimeout(() => { setPhase('escalated'); setStamp(hm()); }, 21500));
+    const relay = sendAlert(`${st.alert.text} Plan: ${plan}`);
+    timers.current.push(setTimeout(() => { setPhase('waiting'); setStamp(hm()); }, demoOneWayMs));
+    timers.current.push(setTimeout(() => { setPhase('escalated'); setStamp(hm()); }, demoRoundTripMs));
+    await relay;
   }
   const ack = () => { clear(); setPhase('acked'); setStamp(hm()); setView('sh'); };
   const reset = () => { clear(); setPhase('idle'); setView('no'); };
@@ -162,10 +172,12 @@ export default function App() {
   const pct = Math.round((mSv / st.dose.limit) * 100);
   const C = 2 * Math.PI * 70;
   const solar = SOLAR_OUTLOOK[solarScenario];
+  const demoOneWayMs = Math.max(250, Math.round(delay * 1000 / 60));
+  const demoRoundTripMs = demoOneWayMs * 2;
 
-  const sub = { idle: 'Connected, across the distance', sent: `Sent at ${stamp} · encrypted`, waiting: `Earliest reply window · ${stamp}`,
+  const sub = { idle: 'Connected, across the distance', sent: `Sent at ${stamp} · queued for relay`, waiting: `Packet reached Earth · ${stamp}`,
     acked: `Acknowledged at ${stamp}`, escalated: `Escalated onboard at ${stamp}` }[phase];
-  const foot = { idle: `${fmt(delay)} one way · ~${fmt(delay * 2)} round trip`, sent: 'Queued for relay', waiting: `${fmt(delay)} one way · ~${fmt(delay * 2)} round trip`,
+  const foot = { idle: `${fmt(delay)} one way · ~${fmt(delay * 2)} round trip`, sent: `Compressed demo: ${fmtDemo(demoOneWayMs)} to Earth`, waiting: `Compressed demo: ${fmtDemo(demoOneWayMs)} until escalation`,
     acked: 'Flight clinician received your evidence', escalated: 'No reply yet · follow onboard protocol' }[phase];
   const guide = () => { setSel('heart'); setOpen(true); };
   const [label, action] = ({ idle: [online ? 'Send to Earth' : 'Queue for Earth', send], sent: ['Message sent', null], waiting: ['Waiting for Earth', null],
@@ -177,10 +189,10 @@ export default function App() {
 
   return (
     <div className="app">
-      <div className="ios-status" aria-hidden="true"><b>9:41</b><span className="island" /><svg className="status-icons" viewBox="0 0 72 18"><path d="M1 16h4V11H1zm7 0h4V8H8zm7 0h4V5h-4z" fill="currentColor"/><path d="M27 7a13 13 0 0 1 17 0M30 10a9 9 0 0 1 11 0m-8 3a4 4 0 0 1 5 0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><rect x="52" y="4" width="17" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.5"/><rect x="69.5" y="7" width="2" height="4" rx="1" fill="currentColor"/><path d="M54.5 6.5h11v5h-11z" fill="currentColor"/></svg></div>
+      {st.demo && <div className="demo-ribbon">SIMULATED DEMO DATA · 7 baseline days · 5 after-change days</div>}
       {tab === 'status' && <>
         <div className="top"><h1>Status</h1><button className="x" aria-label="Sources and safety" onClick={() => setInfo(true)}>ⓘ</button></div>
-        <p className="sub">Mission day {st.day} · {st.overall.status === 'scored' ? `Score ${st.overall.score}/10` : 'Score pending'}</p>
+        <p className="sub">Mission day {st.day} · {st.overall.status === 'scored' ? `Experimental trend score ${st.overall.score}/10` : 'Experimental score pending'}</p>
         <section className="brief card" aria-label="Mission overview">
           <div className="brief-top"><span className="eyebrow">NOW · MISSION BRIEF</span><span className="live-tag"><i /> LIVE</span></div>
           <div className="brief-main"><div><strong>{alertSystems.length ? `${alertSystems.length} active alert${alertSystems.length > 1 ? 's' : ''}` : watchSystems.length ? `${watchSystems.length} systems on watch` : pendingSystems.length ? `${pendingSystems.length} systems need data` : 'All systems stable'}</strong><p>{watchSummary}</p></div><span className={`brief-count ${alertSystems.length ? 'has-alert' : ''}`}>{String(openCount).padStart(2, '0')}<small>{alertSystems.length ? 'ALERT' : watchSystems.length ? 'WATCH' : 'OPEN'}</small></span></div>
@@ -254,6 +266,7 @@ export default function App() {
         <h1>Earth</h1><p className="sub">{sub}</p>
         <div className="card">
           <p className="eyebrow warn">⚠ WATCH · HEART</p>
+          {st.alert.explanation_source && <p className="explanation-source">{st.alert.explanation_source === 'openrouter' ? `LLM-generated · ${st.alert.explanation_model || 'OpenRouter'}` : 'Template fallback · LLM unavailable'}</p>}
           <h2>{st.alert.title || 'Alert'}</h2><p className="mut">{st.alert.text}</p>
           <ul className="cites">{st.alert.cites.map(c => <li key={c.title}><a href={c.url}>↗ {c.title} ›</a></li>)}</ul>
         </div>
@@ -262,6 +275,7 @@ export default function App() {
           <div className="between"><b>Message delay</b><b className="blue">{fmt(delay)}</b></div>
           <input type="range" min={2} max={1200} value={delay} aria-label="Message delay" onChange={e => setDelay(+e.target.value)} />
           <div className="between mut"><small>2 s</small><small>1 min</small><small>20 min</small></div>
+          <p className="mut demo-timing">Demo clock: about 1 real second per simulated minute, with a 250 ms minimum per leg.</p>
         </div>
         <div className="card"><p className="eyebrow blue">RECOMMENDED ACTION</p><p>{plan}</p></div>
         <ol className="tl">{STEPS.map((n, i) => {
@@ -297,7 +311,8 @@ export default function App() {
             <div key={r.category} className="live">
               <div className="between"><b>{CATEGORY_META[r.category].label}</b><em className={r.color}>{r.status === 'scored' ? `${r.score}/10` : 'Pending'}</em></div>
               <p className="mut">{describe(r)}</p>
-              {r.explanation && <p>{r.explanation}</p>}
+              {r.explanation && <><p className="explanation-source">{r.explanation_source === 'openrouter' ? `LLM-generated · ${r.explanation_model || 'OpenRouter'}` : 'Template fallback · LLM unavailable'}</p><p>{r.explanation}</p></>}
+              {r.drift_detected && <p className="trend-flag">CUSUM flagged a sustained personal-baseline shift · experimental alert</p>}
               {!!r.explanation_plan?.length && <ul className="srcs">{r.explanation_plan.map(item => <li key={item}>{item}</li>)}</ul>}
               {!!r.explanation_watch_for?.length && <p className="mut">Watch for {r.explanation_watch_for.join(', ')}.</p>}
               {r.explanation_caveat && <p className="mut">{r.explanation_caveat}</p>}
@@ -307,10 +322,10 @@ export default function App() {
         <h3>How it’s measured</h3><p>{s.measure}</p>
         <h3>How spaceflight changes it</h3><p>{s.change}</p>
         <h3>When to escalate</h3><p>{s.escalate}</p>
-        <p className="mut">Source: {s.source}. Illustrative baseline; clinician-defined thresholds.</p></Sheet>}
+        <p className="mut">Source context: {s.source}. Experimental trend indicator only; not a diagnosis or validated astronaut-health threshold.</p></Sheet>}
       {info && <Sheet title="Sources and safety" onClose={() => setInfo(false)}>
-        <ul className="srcs">{SOURCES.map(x => <li key={x}>{x}</li>)}</ul>
-        <p className="mut">Prototype, not a diagnosis. Simulated drifts are labeled as simulated. Real astronaut garment data is not public.</p>
+        <ul className="source-list">{SOURCES.map(x => <li key={x.title}><a href={x.url} target="_blank" rel="noreferrer">{x.title} ↗</a><p className="mut">{x.supports}</p></li>)}</ul>
+        <p className="mut">This prototype uses experimental trend indicators. Its scores and simulated readings are not validated astronaut-health thresholds or a diagnosis.</p>
         <h3>Account</h3>
         <p className="mut">{session.phone}</p>
         <button className="link" onClick={signOut}>Sign out</button>
