@@ -22,7 +22,7 @@ SYSTEM_PROMPT = """You are the health explanation engine inside a personal befor
 
 WHAT THE JSON MEANS
 - category: one of sleep_hours, mood, hrv, heart_rate, temperature, glucose, or overall.
-- status: "scored" means there is enough data. "needs_before_data", "needs_after_data" or "needs_data" means the score is null and the user simply has more logging to do.
+- status: "scored" means there is enough data. "needs_before_data", "needs_after_data" or "needs_data" means the score is null because a reading is still missing. A single baseline day is enough to score.
 - before_days / after_days: number of distinct days of data in the baseline phase and in the intervention phase.
 - baseline: the median value during the baseline phase, per day.
 - recent: mean of the most recent three days of the intervention phase.
@@ -56,11 +56,11 @@ HOW TO WRITE
 - Never restate the score as a diagnosis. Describe what the pattern suggests and what would move it back.
 - Distinguish a single noisy day from a sustained shift. Use drift_detected for the second case.
 - Mention plausible measurement error when the swing is large but the data is thin: cuff size, posture, time of day, a missed night of logging, a feverish night, a drink the evening before.
-- When status is not "scored", do not invent numbers. Say what is missing and exactly how many more days to log, and keep the plan generic and encouraging.
+- When status is not "scored", do not invent numbers. Say which reading is missing and keep the plan generic and encouraging. Never ask the user to log for a week or for several consecutive days; one baseline reading is enough.
 - Be honest that tracker data is not a clinical measurement and that scores summarize patterns, not your health.
 
 PLANS
-Give plans that are realistic within one to two weeks, ordered from the highest-yield change, three to five items, each one concrete action with a frequency or a target. Typical levers: consistent sleep and wake times, cutting evening alcohol and caffeine, ten minutes of slow breathing or a short walk after meals, sodium reduction and more potassium-rich food for blood pressure, regular weigh-ins and morning readings taken seated after five minutes of rest, hydration, protein and fibre at each meal for glucose, daylight in the morning, and light movement on low-HRV days instead of intense training. Never suggest starting, stopping or changing a medication dose, and say to talk to a clinician about medication.
+Give plans that can start today, ordered from the highest-yield change, two to three items, each one concrete action with a frequency or a target. Typical levers: consistent sleep and wake times, cutting evening alcohol and caffeine, ten minutes of slow breathing or a short walk after meals, sodium reduction and more potassium-rich food for blood pressure, regular weigh-ins and morning readings taken seated after five minutes of rest, hydration, protein and fibre at each meal for glucose, daylight in the morning, and light movement on low-HRV days instead of intense training. Never suggest starting, stopping or changing a medication dose, and say to talk to a clinician about medication.
 
 SYMPTOMS TO WATCH
 Name the concrete symptoms that fit the metric under discussion, not a generic list. For blood pressure and heart rate: headache, dizziness on standing, nosebleeds, chest tightness, breathlessness, palpitations, fainting. For temperature: chills, sore throat, body aches, persistent fever, confusion. For glucose: thirst, frequent urination, blurred vision, shakiness, sweating, confusion. For sleep and HRV: unrefreshing sleep, daytime sleepiness, irritability, slower recovery. Flag emergency signs explicitly when the numbers or the hard limit warrant it.
@@ -169,10 +169,12 @@ def _fallback(result, reason):
             if status == "needs_before_data"
             else "Keep logging readings after the change."
         )
+        before_days = result.get("before_days", 0)
+        after_days = result.get("after_days", 0)
         summary = (
             f"There is not enough {label} data to score yet. "
-            f"You have {result.get('before_days', 0)} baseline days and "
-            f"{result.get('after_days', 0)} days after the change. {missing}"
+            f"You have {before_days} baseline day{'s' if before_days != 1 else ''} and "
+            f"{after_days} day{'s' if after_days != 1 else ''} after the change. {missing}"
         )
     else:
         if category == "overall":

@@ -1,7 +1,7 @@
 from collections import defaultdict
 from statistics import median, mean, pstdev
 
-MIN_BEFORE_DAYS = 2
+MIN_BEFORE_DAYS = 1
 RECENT_DAYS = 3
 SPREAD_INFLATE = 1.4
 CUSUM_H = 5
@@ -40,7 +40,9 @@ def score_category(category, before_rows, after_rows):
         "category": category,
         "label": cfg["label"],
         "before_days": len(before),
-        "after_days": len(after)
+        "after_days": len(after),
+        "before_readings": len(before_rows),
+        "after_readings": len(after_rows)
     }
 
     if len(before) < MIN_BEFORE_DAYS:

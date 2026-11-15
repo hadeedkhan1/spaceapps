@@ -13,7 +13,6 @@ async function load() {
 const dist = (a: any, b: any, w: number, h: number) => Math.hypot((a.x - b.x) * w, (a.y - b.y) * h);
 const TIP = 'Neutral face, even light';
 
-// Only numbers leave this component; the image is never stored or sent.
 export default function Selfie({ onMetric }: { onMetric: (pct: number) => void }) {
   const v = useRef<HTMLVideoElement>(null);
   const base = useRef<number | null>(null);
@@ -40,9 +39,9 @@ export default function Selfie({ onMetric }: { onMetric: (pct: number) => void }
   return (
     <>
       <div className={`view ${on ? 'live' : ''}`}>
-        <span className="camera-label">CAMERA PREVIEW</span>
+        <span className="camera-label">Camera preview</span>
         <video ref={v} playsInline muted />
-        {err ? <div className="err"><b>⚠ Camera unavailable</b><span>Check camera access, then try again.</span></div>
+        {err ? <div className="err"><b>Camera unavailable</b><span>Check camera access, then try again.</span></div>
           : <><i className="oval" /><p className="tip">{msg}</p></>}
       </div>
       <div className="shwrap">

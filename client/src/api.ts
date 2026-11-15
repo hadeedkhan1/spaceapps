@@ -1,12 +1,4 @@
-import {
-  ALERT_CITES,
-  CAREER_LIMIT,
-  CATEGORY_IDS,
-  CATEGORY_META,
-  MISSION_DAY,
-  SYSTEM_META,
-  doseSeries,
-} from './contract';
+import { ALERT_CITES, CATEGORY_IDS, CATEGORY_META, SYSTEM_META } from './contract';
 import type {
   Category,
   CategoryScore,
@@ -74,11 +66,9 @@ export async function loadState(userid: string): Promise<State> {
   ) as Record<Category, CategoryScore>;
 
   return {
-    day: MISSION_DAY,
     systems: SYSTEM_META.map(meta => buildSystem(meta, meta.categories.map(category => results[category]))),
     results,
     overall,
-    dose: { limit: CAREER_LIMIT, series: doseSeries() },
     alert: buildAlert(overall),
   };
 }
@@ -103,7 +93,7 @@ function buildAlert(overall: ScoreResult): State['alert'] {
     return {
       title: 'Learning your baseline',
       text: overall.explanation
-        || 'Log at least two baseline days, then a reading after the change, to unlock your first score.',
+        || 'Log one baseline reading, then a reading after the change, to unlock your first score.',
       cites: ALERT_CITES,
     };
   }
@@ -115,17 +105,16 @@ function buildAlert(overall: ScoreResult): State['alert'] {
   };
 }
 
-export async function sendAlert(text: string) {
-  try {
-    const r = await fetch('/api/send-alert', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-    });
-    return await r.json();
-  } catch {
-    return { mock: true, text };
-  }
+export interface AlertDelivery {
+  sent: boolean;
+  mock: boolean;
+  text: string;
+  contact?: string | null;
+  message_id?: string;
+}
+
+export function sendAlert(userid: string, delaySec: number) {
+  return request<AlertDelivery>('/alert', { userid, delay_sec: delaySec });
 }
 
 export function actionFor(delaySec: number) {

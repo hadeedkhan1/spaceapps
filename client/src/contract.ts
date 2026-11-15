@@ -37,6 +37,8 @@ export interface ScoreResult {
   score: number | null;
   before_days?: number;
   after_days?: number;
+  before_readings?: number;
+  after_readings?: number;
   baseline?: number;
   after_avg?: number;
   recent?: number;
@@ -128,18 +130,10 @@ export interface Sys extends SystemMeta {
   z: number;
 }
 
-export interface DosePt {
-  day: number;
-  ignored: number;
-  sheltered: number;
-}
-
 export interface State {
-  day: number;
   systems: Sys[];
   results: Partial<Record<Category, CategoryScore>>;
   overall: ScoreResult;
-  dose: { limit: number; series: DosePt[] };
   alert: { title?: string; text: string; cites: { title: string; url: string }[] };
 }
 
@@ -148,23 +142,8 @@ export interface Session {
   phone: string;
 }
 
-export const MISSION_DAY = 80;
-export const CAREER_LIMIT = 600;
-
 export const ALERT_CITES = [
   { title: 'NASA HRP · Cardiovascular', url: 'https://www.nasa.gov/hrp/' },
   { title: 'PhysioNet · Signal context', url: 'https://physionet.org/' },
 ];
 
-export function doseSeries(): DosePt[] {
-  let ignored = 0;
-  let sheltered = 0;
-  const series: DosePt[] = [];
-  for (let day = 0; day <= 240; day += 1) {
-    const base = day === 0 ? 0 : day < 79 ? 1.815 : day === 79 ? 1.81 : day === 80 ? 0.62 : 0;
-    ignored += day > 80 ? 2.85 : base;
-    sheltered += day > 80 ? 1.6 : base;
-    series.push({ day, ignored: +ignored.toFixed(2), sheltered: +sheltered.toFixed(2) });
-  }
-  return series;
-}

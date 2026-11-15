@@ -1,16 +1,11 @@
-
-
-
-
-
 export type SystemId = "brain" | "eyes" | "heart" | "immune" | "arms" | "legs";
 export type Status = "ok" | "watch" | "alert" | "idle";
 
 const COLOR: Record<Status, string> = {
-  ok: "#30D158",
-  watch: "#FFD60A",
-  alert: "#FF453A",
-  idle: "#5C6068",
+  ok: "#3DDC97",
+  watch: "#F2C14E",
+  alert: "#FF6B7A",
+  idle: "#4A5260",
 };
 
 const SILHOUETTE =
@@ -85,8 +80,8 @@ export default function BodyMap({
       aria-label="Body status map"
       style={{ display: "block", margin: "0 auto" }}
     >
-      <path d={SILHOUETTE} fill="#707078" />
-      <path d={TORSO} fill="#91919A" />
+      <path d={SILHOUETTE} fill="#2A313C" />
+      <path d={TORSO} fill="#394150" />
       {REGIONS.map((r) => (
         <g
           key={r.id}
@@ -106,7 +101,7 @@ export default function BodyMap({
           opacity={selected && selected !== r.id ? 0.55 : 1}
         >
           {r.d.map((d, i) => (
-            <path key={i} d={d} fill={COLOR[status[r.id]]} stroke={selected === r.id ? "#fff" : "transparent"} strokeWidth={selected === r.id ? 1.25 : 0} vectorEffect="non-scaling-stroke" />
+            <path key={i} d={d} fill={COLOR[status[r.id]]} stroke={selected === r.id ? "#E9EDF3" : "transparent"} strokeWidth={selected === r.id ? 1.25 : 0} vectorEffect="non-scaling-stroke" />
           ))}
         </g>
       ))}

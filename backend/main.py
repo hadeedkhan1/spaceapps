@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from backend.alert import LoopMessageError, build_condition_text, send_message
 from backend.auth import normalize_phone, hash_password, verify_password
 from backend.scoring import CATEGORIES, score_category, score_overall
 from backend.explain import explain
@@ -46,6 +47,11 @@ class Reading(BaseModel):
     value: float
     time: Literal["before", "after"]
     recorded_at: datetime | None = None
+
+
+class Alert(BaseModel):
+    userid: str
+    delay_sec: int = Field(default=120, ge=0, le=3600)
 
 
 def clean_phone(raw):
@@ -95,10 +101,7 @@ def add_reading(r: Reading):
     return {"ok": True}
 
 
-@app.get("/status")
-def get_status(userid: str = Query(...), category: str = Query("overall")):
-    if category != "overall" and category not in CATEGORIES:
-        raise HTTPException(400, f"category must be 'overall' or one of {list(CATEGORIES)}")
+def scored_user(userid):
     db = get_db()
     require_user(db, userid)
     rows = (db.table("readings").select("category,value,phase,recorded_at")
@@ -110,9 +113,29 @@ def get_status(userid: str = Query(...), category: str = Query("overall")):
                               [x for x in mine if x["phase"] == "before"],
                               [x for x in mine if x["phase"] == "after"])
 
-    result = score_overall([one(c) for c in CATEGORIES]) if category == "overall" else one(category)
+    categories = [one(c) for c in CATEGORIES]
+    return score_overall(categories), categories
+
+
+@app.get("/status")
+def get_status(userid: str = Query(...), category: str = Query("overall")):
+    if category != "overall" and category not in CATEGORIES:
+        raise HTTPException(400, f"category must be 'overall' or one of {list(CATEGORIES)}")
+    overall, categories = scored_user(userid)
+    result = overall if category == "overall" else next(
+        r for r in categories if r["category"] == category)
     result.update(explain(result))
     return result
+
+
+@app.post("/alert")
+def send_alert(a: Alert):
+    overall, categories = scored_user(a.userid)
+    text = build_condition_text(overall, categories, delay_sec=a.delay_sec)
+    try:
+        return send_message(text)
+    except LoopMessageError as exc:
+        raise HTTPException(502, str(exc))
 
 
 if __name__ == "__main__":

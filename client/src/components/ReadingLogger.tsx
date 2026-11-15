@@ -3,9 +3,15 @@ import { addReading } from '../api';
 import { CATEGORY_IDS, CATEGORY_META } from '../contract';
 import type { Category, ReadingPhase } from '../contract';
 
+function todayLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 export default function ReadingLogger({ userid, onSaved }: { userid: string; onSaved: () => void }) {
   const [category, setCategory] = useState<Category>('heart_rate');
   const [phase, setPhase] = useState<ReadingPhase>('after');
+  const [date, setDate] = useState(todayLocal);
   const [value, setValue] = useState(String(CATEGORY_META.heart_rate.sample));
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
@@ -32,7 +38,7 @@ export default function ReadingLogger({ userid, onSaved }: { userid: string; onS
         category,
         value: reading,
         time: phase,
-        recorded_at: new Date().toISOString(),
+        recorded_at: date,
       });
       setStatus({ kind: 'ok', text: `${meta.label} saved.` });
       onSaved();
@@ -44,8 +50,8 @@ export default function ReadingLogger({ userid, onSaved }: { userid: string; onS
   }
 
   return (
-    <form className="card" onSubmit={submit}>
-      <div className="between"><h2>Log a reading</h2><span className="eyebrow blue">SYNCED</span></div>
+    <form className="panel" onSubmit={submit}>
+      <div className="between"><h2>Log a reading</h2></div>
       <div className="metrics" role="group" aria-label="Metric">
         {CATEGORY_IDS.map(id => (
           <button key={id} type="button" className={category === id ? 'on' : ''}
@@ -63,13 +69,18 @@ export default function ReadingLogger({ userid, onSaved }: { userid: string; onS
         </button>
       </div>
       <div className="field">
+        <label htmlFor="reading-date">Date measured</label>
+        <input id="reading-date" type="date" value={date} max={todayLocal()}
+          onChange={e => setDate(e.target.value)} required />
+      </div>
+      <div className="field">
         <label htmlFor="reading-value">{meta.label} in {meta.unit}</label>
         <input id="reading-value" type="number" step={meta.step} inputMode="decimal"
           value={value} onChange={e => setValue(e.target.value)} required />
       </div>
       {status && <p className={status.kind === 'error' ? 'err-line' : 'mut'}>{status.text}</p>}
       <button className="btn" disabled={busy}>{busy ? 'Saving…' : 'Save reading'}</button>
-      <p className="mut">Two baseline days unlock a score; keep logging after the change.</p>
+      <p className="note">One baseline reading plus one after reading unlocks a score. Backdate a reading to compare a change you already made.</p>
     </form>
   );
 }

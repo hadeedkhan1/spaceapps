@@ -4,4 +4,5 @@ backend/__pycache__/
 client/node_modules/
 client/bun.lock
 client/package-lock.json
+client/dist/
 .env
