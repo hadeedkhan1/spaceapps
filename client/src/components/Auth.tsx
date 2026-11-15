@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react';
-import { createAccount, logIn, saveSession } from '../api';
+import { createAccount, logIn, saveSession, startDemo } from '../api';
 import type { Session } from '../contract';
 
 export default function Auth({ onSession }: { onSession: (session: Session) => void }) {
@@ -7,6 +7,7 @@ export default function Auth({ onSession }: { onSession: (session: Session) => v
   const [phone, setPhone] = useState('+1');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
   const [error, setError] = useState('');
 
   async function submit(event: FormEvent) {
@@ -24,6 +25,21 @@ export default function Auth({ onSession }: { onSession: (session: Session) => v
       setError((err as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function enterDemo() {
+    setDemoBusy(true);
+    setError('');
+    try {
+      const result = await startDemo();
+      const session = { userid: result.userid, phone: result.phone, demo: true };
+      saveSession(session);
+      onSession(session);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDemoBusy(false);
     }
   }
 
@@ -49,6 +65,16 @@ export default function Auth({ onSession }: { onSession: (session: Session) => v
               ? 'Your readings and scores stay tied to this account.'
               : 'One account holds your readings across sessions and devices.'}
           </p>
+        </div>
+
+        <div className="panel demo-entry">
+          <div>
+            <b>Simulated demo</b>
+            <p className="note">Seven baseline days and five after-change days for a heart-rate trend.</p>
+          </div>
+          <button type="button" className="btn" onClick={enterDemo} disabled={demoBusy || busy}>
+            {demoBusy ? 'Preparing…' : 'Open demo account'}
+          </button>
         </div>
 
         <form className="panel auth-form" onSubmit={submit}>

@@ -1,7 +1,8 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { CATEGORY_META, HAZARDS, Hazard, Session, State, Sys } from './contract';
 import type { CategoryScore } from './contract';
-import { actionFor, loadState, readSession, saveSession, sendAlert } from './api';
+import { actionFor, getSolarFeed, loadState, readSession, saveSession, sendAlert } from './api';
+import type { SolarFeed } from './api';
 import Auth from './components/Auth';
 import ReadingLogger from './components/ReadingLogger';
 import BodyMap from './components/BodyMap';
@@ -66,6 +67,8 @@ export default function App() {
   const [delay, setDelay] = useState(1200);
   const [online, setOnline] = useState(navigator.onLine);
   const [captures, setCaptures] = useState<{ n: number; pct: number }[]>([]);
+  const [solarFeed, setSolarFeed] = useState<SolarFeed | null>(null);
+  const [solarError, setSolarError] = useState('');
   const timers = useRef<any[]>([]);
   const clear = () => { timers.current.forEach(clearTimeout); timers.current = []; };
 
@@ -76,9 +79,18 @@ export default function App() {
     }
     let alive = true;
     setLoadError('');
-    loadState(session.userid)
+    loadState(session.userid, session.demo)
       .then(next => { if (alive) setSt(next); })
       .catch(err => { if (alive) setLoadError((err as Error).message); });
+    return () => { alive = false; };
+  }, [session, reload]);
+
+  useEffect(() => {
+    if (!session) return;
+    let alive = true;
+    getSolarFeed()
+      .then(data => { if (alive) { setSolarFeed(data); setSolarError(''); } })
+      .catch(err => { if (alive) setSolarError((err as Error).message); });
     return () => { alive = false; };
   }, [session, reload]);
 
@@ -168,7 +180,7 @@ export default function App() {
   const detail = (x: Sys) => x.status !== 'grey'
     ? `${TREND[x.trend]} · ${x.z.toFixed(1)} SD from baseline`
     : baselineDaysOf(x) ? 'Baseline set · log a reading after the change' : 'No readings yet';
-  const masked = `•••• ${session.phone.slice(-4)}`;
+  const masked = session.demo ? 'Simulated demo' : `•••• ${session.phone.slice(-4)}`;
 
   async function send() {
     clear(); setSending(true); setEarthNote(''); setEarthError('');
@@ -263,6 +275,7 @@ export default function App() {
       </header>
 
       <main className="page-wrap">
+        {st.demo && <div className="demo-ribbon">Simulated demo data · 7 baseline days · 5 after-change days</div>}
         {tab === 'status' && (
           <section className="page">
             <header className="page-head">
@@ -348,6 +361,18 @@ export default function App() {
                   <div className="panel-head"><h2>Current assessment</h2><span className="hint">From your readings</span></div>
                   <h3 className="alert-title">{st.alert.title || 'Alert'}</h3>
                   <p className="mut">{st.alert.text}</p>
+                  {st.alert.evidence_provider && st.alert.evidence_provider !== 'none' && (
+                    <p className="provider">{st.alert.evidence_provider === 'serpapi' ? 'Evidence retrieved with SerpApi' : 'Curated sources'}</p>
+                  )}
+                  {st.alert.evidence_summary && (
+                    <div className="evidence"><b>Research context</b><p>{st.alert.evidence_summary}</p></div>
+                  )}
+                  {!st.alert.evidence_summary && !!st.alert.evidence_results?.length && (
+                    <div className="evidence">
+                      <b>Source excerpts</b>
+                      {st.alert.evidence_results.map(item => <p key={item.url}>{item.snippet}</p>)}
+                    </div>
+                  )}
                   <ul className="cites">
                     {st.alert.cites.map(c => <li key={c.title}><a href={c.url} rel="noreferrer">{c.title}</a></li>)}
                   </ul>
@@ -366,6 +391,27 @@ export default function App() {
                 <section className="panel">
                   <div className="panel-head"><h2>Recommended action</h2></div>
                   <p>{plan}</p>
+                </section>
+                <section className="panel">
+                  <div className="panel-head"><h2>Solar particle events</h2><span className="hint">NASA DONKI</span></div>
+                  <p className="note">Observed reports from the past 7 days. Not a forecast.</p>
+                  {solarError && <p className="err-line">NASA feed unavailable · {solarError}</p>}
+                  {!solarError && !solarFeed && <p className="note">Loading NASA event reports…</p>}
+                  {!solarError && solarFeed && (solarFeed.events.length ? (
+                    <ul className="events">
+                      {solarFeed.events.map((event, index) => (
+                        <li key={`${event.eventTime}-${index}`}>
+                          <span className="event-dot" />
+                          <div>
+                            <b>{event.eventTime ? new Date(event.eventTime).toLocaleString() : 'Time not provided'}</b>
+                            <small>{event.instruments?.map(i => i.displayName).filter(Boolean).join(', ') || 'Instruments not listed'}</small>
+                          </div>
+                          {event.link && <a href={event.link} target="_blank" rel="noreferrer">NASA</a>}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p className="note">No reports in this 7-day window.</p>)}
+                  {solarFeed?.fetchedAt && <p className="note">Updated {new Date(solarFeed.fetchedAt).toLocaleTimeString()} · observational catalog</p>}
                 </section>
               </div>
 

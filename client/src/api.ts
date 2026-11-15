@@ -24,6 +24,13 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
+export type SolarEvent = { eventTime: string; link?: string | null; instruments?: { displayName?: string }[] };
+export type SolarFeed = { events: SolarEvent[]; fetchedAt: string; source: string };
+
+export function getSolarFeed() {
+  return request<SolarFeed>('/space-weather');
+}
+
 export function readSession(): Session | null {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
@@ -46,6 +53,10 @@ export function logIn(phone: string, password: string) {
   return request<{ userid: string }>('/login', { phone, password });
 }
 
+export function startDemo() {
+  return request<{ userid: string; phone: string; demo: boolean }>('/demo', {});
+}
+
 export function addReading(reading: Reading) {
   return request<{ ok: boolean }>('/readings', reading);
 }
@@ -56,7 +67,7 @@ export function getStatus(userid: string, category: Category | 'overall') {
   );
 }
 
-export async function loadState(userid: string): Promise<State> {
+export async function loadState(userid: string, demo = false): Promise<State> {
   const [overall, categoryScores] = await Promise.all([
     getStatus(userid, 'overall'),
     Promise.all(CATEGORY_IDS.map(category => getStatus(userid, category))),
@@ -70,6 +81,7 @@ export async function loadState(userid: string): Promise<State> {
     results,
     overall,
     alert: buildAlert(overall),
+    demo,
   };
 }
 
@@ -88,20 +100,33 @@ function buildSystem(meta: SystemMeta, scores: CategoryScore[]): Sys {
 }
 
 function buildAlert(overall: ScoreResult): State['alert'] {
+  const cites = overall.evidence_results?.length
+    ? overall.evidence_results.map(({ title, url }) => ({ title, url }))
+    : ALERT_CITES;
   const worst = overall.worst?.[0];
   if (overall.status !== 'scored' || !worst) {
     return {
       title: 'Learning your baseline',
       text: overall.explanation
         || 'Log one baseline reading, then a reading after the change, to unlock your first score.',
-      cites: ALERT_CITES,
+      cites,
+      explanation_source: overall.explanation_source,
+      explanation_model: overall.explanation_model,
+      evidence_summary: overall.evidence_summary,
+      evidence_provider: overall.evidence_provider,
+      evidence_results: overall.evidence_results,
     };
   }
   const label = CATEGORY_META[worst.category].label;
   return {
     title: `${label} ${worst.color === 'red' ? 'needs attention' : 'on watch'}`,
     text: `${overall.explanation ?? ''} Overall ${overall.score}/10.`,
-    cites: ALERT_CITES,
+    cites,
+    explanation_source: overall.explanation_source,
+    explanation_model: overall.explanation_model,
+    evidence_summary: overall.evidence_summary,
+    evidence_provider: overall.evidence_provider,
+    evidence_results: overall.evidence_results,
   };
 }
 

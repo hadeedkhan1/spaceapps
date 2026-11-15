@@ -7,12 +7,13 @@ SPREAD_INFLATE = 1.4
 CUSUM_H = 5
 
 CATEGORIES = {
-    "sleep_hours": {"label": "sleep", "bad": "low", "min_spread": 0.3, "hard": (4.0, None)},
-    "mood": {"label": "mood", "bad": "low", "min_spread": 0.3, "hard": (None, None)},
-    "hrv": {"label": "heart variability", "bad": "low", "min_spread": 3.0, "hard": (None, None)},
-    "heart_rate": {"label": "resting heart rate", "bad": "high", "min_spread": 2.0, "hard": (40, 110)},
-    "temperature": {"label": "body temperature", "bad": "both", "min_spread": 0.15, "hard": (35.0, 38.0)},
-    "glucose": {"label": "blood glucose", "bad": "both", "min_spread": 5.0, "hard": (70, 180)},
+    "sleep_hours": {"label": "sleep", "bad": "low", "min_spread": 0.3},
+    "mood": {"label": "mood", "bad": "low", "min_spread": 0.3},
+    "hrv": {"label": "heart variability", "bad": "low", "min_spread": 3.0},
+    "heart_rate": {"label": "resting heart rate", "bad": "high", "min_spread": 2.0},
+    "temperature": {"label": "body temperature", "bad": "both", "min_spread": 0.15},
+    "glucose": {"label": "blood glucose", "bad": "both", "min_spread": 5.0},
+    "vision_symptoms": {"label": "vision symptoms", "bad": "high", "min_spread": 1.0},
 }
 
 def daily_series(rows):
@@ -67,10 +68,7 @@ def score_category(category, before_rows, after_rows):
     if drift:
         score = min(score, 6.9)
 
-    lo, hi = cfg["hard"]
-    hard_hit = (lo is not None and recent < lo) or (hi is not None and recent > hi)
-    if hard_hit:
-        score = min(score, 2.0)
+    hard_hit = False
 
     change = recent - base
     out.update(

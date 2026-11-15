@@ -1,7 +1,12 @@
 import os
 import secrets
 import sys
-from datetime import datetime
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import date, datetime, time, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -18,6 +23,7 @@ from backend.alert import LoopMessageError, build_condition_text, send_message
 from backend.auth import normalize_phone, hash_password, verify_password
 from backend.scoring import CATEGORIES, score_category, score_overall
 from backend.explain import explain
+from backend.evidence import search_evidence
 
 load_dotenv(ROOT / ".env")
 _db = None
@@ -34,6 +40,7 @@ def get_db():
 app = FastAPI(title="riverhacks 26 backend api")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
+DEMO_PHONE = "+15555550199"
 
 
 class Credentials(BaseModel):
@@ -64,6 +71,44 @@ def clean_phone(raw):
 def require_user(db, userid):
     if not db.table("users").select("user_id").eq("user_id", userid).execute().data:
         raise HTTPException(404, "Unknown userid. Sign up first.")
+
+
+@app.post("/demo")
+def demo_account():
+    db = get_db()
+    users = db.table("users").select("user_id").eq("phone", DEMO_PHONE).execute().data
+    if users:
+        userid = users[0]["user_id"]
+    else:
+        userid = "u_demo_" + secrets.token_hex(6)
+        db.table("users").insert({
+            "user_id": userid,
+            "phone": DEMO_PHONE,
+            "password_hash": hash_password(secrets.token_urlsafe(32)),
+        }).execute()
+
+    readings = (db.table("readings").select("phase,recorded_at")
+                .eq("user_id", userid).eq("category", "heart_rate").execute().data)
+    phase_days = {
+        phase: {str(row["recorded_at"])[:10] for row in readings if row["phase"] == phase and row.get("recorded_at")}
+        for phase in ("before", "after")
+    }
+    if len(phase_days["before"]) < 7 or len(phase_days["after"]) < 5:
+        db.table("readings").delete().eq("user_id", userid).eq("category", "heart_rate").execute()
+        today = datetime.now(timezone.utc).date()
+        baseline = [60, 61, 60, 62, 61, 60, 61]
+        after = [71, 72, 73, 74, 75]
+        seed = []
+        for offset, value in zip(range(12, 5, -1), baseline):
+            day = today - timedelta(days=offset)
+            seed.append({"user_id": userid, "category": "heart_rate", "value": value,
+                         "phase": "before", "recorded_at": datetime.combine(day, time(8), timezone.utc).isoformat()})
+        for offset, value in zip(range(5, 0, -1), after):
+            day = today - timedelta(days=offset)
+            seed.append({"user_id": userid, "category": "heart_rate", "value": value,
+                         "phase": "after", "recorded_at": datetime.combine(day, time(8), timezone.utc).isoformat()})
+        db.table("readings").insert(seed).execute()
+    return {"userid": userid, "phone": "Simulated demo account", "demo": True}
 
 
 @app.post("/signup", status_code=201)
@@ -121,10 +166,22 @@ def scored_user(userid):
 def get_status(userid: str = Query(...), category: str = Query("overall")):
     if category != "overall" and category not in CATEGORIES:
         raise HTTPException(400, f"category must be 'overall' or one of {list(CATEGORIES)}")
-    overall, categories = scored_user(userid)
-    result = overall if category == "overall" else next(
-        r for r in categories if r["category"] == category)
-    result.update(explain(result))
+    db = get_db()
+    require_user(db, userid)
+    rows = (db.table("readings").select("category,value,phase,recorded_at")
+            .eq("user_id", userid).order("recorded_at").limit(5000).execute().data)
+
+    def one(cat):
+        mine = [x for x in rows if x["category"] == cat]
+        return score_category(cat,
+                              [x for x in mine if x["phase"] == "before"],
+                              [x for x in mine if x["phase"] == "after"])
+
+    result = score_overall([one(c) for c in CATEGORIES]) if category == "overall" else one(category)
+    evidence = search_evidence(result) if category == "overall" else {"provider": "none", "results": [], "query": None}
+    result.update(explain(result, use_llm=result.get("status") == "scored", evidence=evidence["results"]))
+    result["evidence_provider"] = evidence["provider"]
+    result["evidence_results"] = evidence["results"]
     return result
 
 
@@ -136,6 +193,40 @@ def send_alert(a: Alert):
         return send_message(text)
     except LoopMessageError as exc:
         raise HTTPException(502, str(exc))
+
+
+@lru_cache(maxsize=1)
+def _nasa_sep_events(_cache_minute: str):
+    today = datetime.now(timezone.utc).date()
+    params = urllib.parse.urlencode({
+        "startDate": (today - timedelta(days=7)).isoformat(),
+        "endDate": today.isoformat(),
+    })
+    url = f"https://ccmc.gsfc.nasa.gov/DONKI-API/get/SEP?{params}"
+    req = urllib.request.Request(url, headers={"User-Agent": "OrbitalTwin/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+@app.get("/space-weather")
+def space_weather():
+    try:
+        payload = _nasa_sep_events(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise HTTPException(502, "NASA space weather feed is temporarily unavailable") from error
+    events = []
+    for event in payload if isinstance(payload, list) else []:
+        events.append({
+            "eventTime": event.get("eventTime"),
+            "link": event.get("link"),
+            "instruments": event.get("instruments", []),
+        })
+    events.sort(key=lambda event: event.get("eventTime") or "", reverse=True)
+    return {
+        "events": events[:5],
+        "fetchedAt": datetime.now(timezone.utc).isoformat(),
+        "source": "NASA DONKI Solar Energetic Particle catalog",
+    }
 
 
 if __name__ == "__main__":

@@ -2,8 +2,8 @@
   "name": "spaceapps",
   "private": true,
   "scripts": {
-    "dev": "concurrently -k -n api,web -c cyan,green \"python backend/main.py\" \"cd client && bun run dev\"",
-    "dev:api": "python backend/main.py",
+    "dev": "concurrently -k -n api,web -c cyan,green \"python -m uvicorn backend.main:app --reload\" \"cd client && bun run dev\"",
+    "dev:api": "python -m uvicorn backend.main:app --reload",
     "dev:web": "cd client && bun run dev"
   },
   "devDependencies": {
