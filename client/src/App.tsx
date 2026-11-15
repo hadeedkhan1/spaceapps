@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { LineChart, Line, XAxis, YAxis, ReferenceLine, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, ReferenceLine, ResponsiveContainer, CartesianGrid, Tooltip } from 'recharts';
 import { CATEGORY_META, HAZARDS, Hazard, Session, State, Sys } from './contract';
 import type { CategoryScore, ScoreResult } from './contract';
-import { actionFor, loadState, readSession, saveSession, sendAlert } from './api';
+import { actionFor, getSolarFeed, loadState, readSession, saveSession, sendAlert } from './api';
+import type { SolarFeed } from './api';
 import Auth from './components/Auth';
 import ReadingLogger from './components/ReadingLogger';
 import BodyMap from './components/BodyMap';
@@ -11,7 +12,6 @@ import Selfie from './components/Selfie';
 
 type Tab = 'status' | 'dose' | 'earth' | 'checkin';
 type Phase = 'idle' | 'sent' | 'waiting' | 'acked' | 'escalated';
-type SolarScenario = 'quiet' | 'watch' | 'storm';
 const WORD = { green: 'Stable', yellow: 'Watch', red: 'Alert', grey: 'No data' };
 const GLYPH = { green: '✓', yellow: '⚠', red: '!', grey: '·' };
 const TREND = { up: '↗ Rising', flat: '→ Steady', down: '↘ Falling' };
@@ -39,17 +39,23 @@ const SOURCES = [
   { title: 'NASA cardiovascular monitoring in microgravity', url: 'https://www.nasa.gov/wp-content/uploads/2022/03/iss_technical_publication_030116.pdf', supports: 'Heart-rate and HRV research context.' },
   { title: 'NASA astronaut vision and SANS research', url: 'https://www.nasa.gov/missions/station/iss-research/science-in-space-july-28-2023-astronaut-vision/', supports: 'Ocular health and visual-symptom context for the Eyes indicator.' },
   { title: 'NOAA GOES proton flux', url: 'https://www.swpc.noaa.gov/products/goes-proton-flux', supports: 'Solar proton observations; this prototype does not connect to the live feed.' },
-  { title: 'NASA MSL Radiation Assessment Detector data', url: 'https://data.nasa.gov/dataset/msl-mars-radiation-assessment-detector-edr-964e9', supports: 'Radiation context for the illustrative dose model; not a crew dosimeter feed.' },
+  { title: 'NASA DONKI Solar Energetic Particle reports', url: 'https://ccmc.gsfc.nasa.gov/DONKI/', supports: 'Live event reports shown on the Dose tab; observational catalog, not a shelter-time forecast.' },
+  { title: 'NASA MSL Radiation Assessment Detector data', url: 'https://data.nasa.gov/dataset/msl-mars-radiation-assessment-detector-edr-964e9', supports: 'Mars surface radiation measurements; not a crew dosimeter feed.' },
   { title: 'NASA Human Rating Guidance', url: 'https://www.nasa.gov/human-rating-guidance/', supports: 'Standards reference only; the prototype does not use its limits as personal thresholds.' },
   { title: 'UCI WESAD wearable dataset', url: 'https://archive.ics.uci.edu/dataset/465/wesad', supports: 'Wearable-signal research context; not astronaut validation data.' },
 ];
 const STATUS_ORDER = ['brain', 'eyes', 'heart', 'immune', 'bones', 'muscle'];
-const SOLAR_OUTLOOK: Record<SolarScenario, { title: string; severity: string; onset: string; prepare: string; duration: string; clear: string }> = {
-  quiet: { title: 'Quiet activity scenario', severity: 'LOW', onset: 'No event', prepare: '—', duration: 'No window', clear: '—' },
-  watch: { title: 'Elevated activity scenario', severity: 'WATCH', onset: '12–18 h', prepare: '12–18 h', duration: '~6 h', clear: '18–24 h' },
-  storm: { title: 'Solar event scenario', severity: 'HIGH', onset: '~4 h', prepare: 'Within ~4 h', duration: '~12 h', clear: '~16 h' },
-};
-
+const DOSE_MODEL_REFERENCE_MSV = 600;
+const SIMULATED_DOSE = (() => {
+  let ignored = 0;
+  let sheltered = 0;
+  return Array.from({ length: 241 }, (_, day) => {
+    const historicalRate = day === 0 ? 0 : day < 79 ? 1.815 : day === 79 ? 1.81 : day === 80 ? 0.62 : 0;
+    ignored += day > 80 ? 2.85 : historicalRate;
+    sheltered += day > 80 ? 1.6 : historicalRate;
+    return { day, ignored: +ignored.toFixed(2), sheltered: +sheltered.toFixed(2) };
+  });
+})();
 function describe(r: CategoryScore) {
   const { unit } = CATEGORY_META[r.category];
   if (r.status === 'scored') {
@@ -84,8 +90,9 @@ export default function App() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [stamp, setStamp] = useState('');
   const [delay, setDelay] = useState(1200);
-  const [view, setView] = useState<'no' | 'sh'>('no');
-  const [solarScenario, setSolarScenario] = useState<SolarScenario>('watch');
+  const [solarFeed, setSolarFeed] = useState<SolarFeed | null>(null);
+  const [solarError, setSolarError] = useState('');
+  const [doseView, setDoseView] = useState<'no' | 'sheltered'>('no');
   const [online, setOnline] = useState(navigator.onLine);
   const [face, setFace] = useState([{ day: 1, pct: 1 }, { day: 40, pct: 3 }, { day: 78, pct: 6 }, { day: 79, pct: 5 }, { day: 80, pct: 4 }]);
   const timers = useRef<any[]>([]);
@@ -103,6 +110,16 @@ export default function App() {
       .catch(err => { if (alive) setLoadError((err as Error).message); });
     return () => { alive = false; };
   }, [session, reload]);
+
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => getSolarFeed().then(data => {
+      if (alive) { setSolarFeed(data); setSolarError(''); }
+    }).catch(error => { if (alive) setSolarError((error as Error).message); });
+    refresh();
+    const timer = setInterval(refresh, 15 * 60 * 1000);
+    return () => { alive = false; clearInterval(timer); };
+  }, []);
 
   useEffect(() => {
     const on = () => setOnline(true), off = () => setOnline(false);
@@ -158,20 +175,25 @@ export default function App() {
 
   async function send() {
     clear(); setPhase('sent'); setStamp(hm());
-    const relay = sendAlert(`${st.alert.text} Plan: ${plan}`);
+    const excerpts = st.alert.evidence_results?.map(item => `${item.title}: ${item.snippet}`).join(' ');
+    const evidenceText = st.alert.evidence_summary || excerpts;
+    const packet = [
+      st.alert.text,
+      evidenceText && `Retrieved evidence: ${evidenceText}`,
+      `Recommended plan: ${plan}`,
+      'Evidence sources:',
+      ...st.alert.cites.map(cite => `${cite.title}: ${cite.url}`),
+    ].filter(Boolean).join('\n');
+    const relay = sendAlert(packet);
     timers.current.push(setTimeout(() => { setPhase('waiting'); setStamp(hm()); }, demoOneWayMs));
     timers.current.push(setTimeout(() => { setPhase('escalated'); setStamp(hm()); }, demoRoundTripMs));
     await relay;
   }
-  const ack = () => { clear(); setPhase('acked'); setStamp(hm()); setView('sh'); };
-  const reset = () => { clear(); setPhase('idle'); setView('no'); };
-
-  const cur = st.dose.series.find(p => p.day === st.day) || st.dose.series[st.dose.series.length - 1];
-  const prev = st.dose.series.find(p => p.day === st.day - 1) || cur;
-  const mSv = view === 'sh' ? cur.sheltered : cur.ignored;
-  const pct = Math.round((mSv / st.dose.limit) * 100);
-  const C = 2 * Math.PI * 70;
-  const solar = SOLAR_OUTLOOK[solarScenario];
+  const ack = () => { clear(); setPhase('acked'); setStamp(hm()); };
+  const reset = () => { clear(); setPhase('idle'); };
+  const currentDose = SIMULATED_DOSE.find(point => point.day === st.day) ?? SIMULATED_DOSE[SIMULATED_DOSE.length - 1];
+  const projectedDose = SIMULATED_DOSE[SIMULATED_DOSE.length - 1];
+  const currentDosePercent = Math.round(currentDose.ignored / DOSE_MODEL_REFERENCE_MSV * 100);
   const demoOneWayMs = Math.max(250, Math.round(delay * 1000 / 60));
   const demoRoundTripMs = demoOneWayMs * 2;
 
@@ -220,46 +242,38 @@ export default function App() {
 
       {tab === 'dose' && <>
         <h1>Dose</h1><p className="sub">Your radiation exposure</p>
-        <div className="card center dose-card">
-          <div className="between dose-kicker"><b>CAREER EXPOSURE</b><b className="green">✓ Within model</b></div>
-          <svg viewBox="0 0 160 160" width="155" height="155" role="img" aria-label={`${pct}% of career limit`}>
-            <circle cx="80" cy="80" r="70" className="trk" />
-            <circle cx="80" cy="80" r="70" className="arc" strokeDasharray={`${(C * Math.min(pct, 100)) / 100} ${C}`} transform="rotate(-90 80 80)" />
-            <text x="80" y="88" textAnchor="middle" className="big">{pct}%</text>
-            <text x="80" y="106" textAnchor="middle" className="smt">of career limit</text>
-          </svg>
-          <p className="mut">{Math.round(mSv)} / {st.dose.limit} mSv · Illustrative career model</p>
+        <div className="card dose-lifetime">
+          <div className="between"><p className="eyebrow">LIFETIME DOSE · SIMULATED</p><span className="model-pill">MODEL DATA</span></div>
+          <div className="dose-total"><strong>{Math.round(currentDose.ignored)}</strong><span>mSv<br/>mission day {st.day}</span></div>
+          <div className="dose-progress" role="img" aria-label={`${currentDosePercent}% of illustrative model reference`}><i style={{ width: `${Math.min(currentDosePercent, 100)}%` }} /></div>
+          <div className="dose-stats"><span><small>MODEL REFERENCE</small><b>{DOSE_MODEL_REFERENCE_MSV} mSv</b></span><span><small>USED IN MODEL</small><b>{currentDosePercent}%</b></span><span><small>DAY 240 · NO SHELTER</small><b>{Math.round(projectedDose.ignored)} mSv</b></span></div>
+          <p className="solar-foot">Hardcoded training scenario, not dosimeter readings or a validated personal safety limit.</p>
         </div>
-        <section className={`card solar-card ${solarScenario}`} aria-label="Solar storm scenario forecast">
-          <div className="solar-heading"><div><p className="eyebrow">SPACE WEATHER</p><h2>Solar outlook</h2></div><span className="simulated-tag">SIMULATED</span></div>
-          <p className="solar-feed">No live forecast feed connected</p>
-          <div className="solar-event" key={solarScenario}><span className="solar-symbol" aria-hidden="true">☼</span><div><b>{solar.title}</b><small>{solarScenario === 'quiet' ? 'No event in this scenario' : `Possible onset · ${solar.onset}`}</small></div><span className="solar-severity">{solar.severity}</span></div>
-          <div className={`solar-track ${solarScenario}`} aria-label={`Scenario timeline: onset ${solar.onset}, estimated shelter duration ${solar.duration}`}>
-            <div className="track-line"><i /></div><div className="track-point now"><i /><small>Now</small></div><div className="track-point onset"><i /><small>Onset</small></div><div className="track-point clear"><i /><small>Clear</small></div>
-          </div>
-          <div className="solar-estimates"><div><small>PREPARE</small><b>{solar.prepare}</b></div><div><small>EST. SHELTER WINDOW</small><b>{solar.duration}</b></div><div><small>EST. CLEAR</small><b>{solar.clear}</b></div></div>
-          <div className="seg scenario-picker" role="group" aria-label="Illustrative solar scenario">
-            {([['quiet', 'Quiet'], ['watch', 'Elevated'], ['storm', 'Storm']] as [SolarScenario, string][]).map(([value, label]) => <button key={value} className={solarScenario === value ? 'on' : ''} aria-pressed={solarScenario === value} onClick={() => setSolarScenario(value)}>{label}</button>)}
-          </div>
-          <p className="solar-foot">Training estimate only. Real event timing and shelter decisions depend on onboard radiation measurements and mission rules.</p>
-        </section>
-        <div className="card">
-          <h2>A safer trajectory</h2>
-          <div className="seg"><button className={view === 'no' ? 'on' : ''} onClick={() => setView('no')}>No shelter</button>
-            <button className={view === 'sh' ? 'on' : ''} onClick={() => setView('sh')}>Sheltered</button></div>
-          <ResponsiveContainer width="100%" height={145}>
-            <LineChart data={st.dose.series}><CartesianGrid stroke="var(--sep)" vertical={false} />
-              <XAxis dataKey="day" domain={[1, 240]} ticks={[1, 80, 160, 240]} tick={{ fill: 'var(--mute)', fontSize: 11 }} stroke="var(--sep)" label={{ value: 'Mission day →', position: 'insideBottom', offset: -9, fill: 'var(--mute)', fontSize: 11 }} />
-              <YAxis domain={[0, st.dose.limit]} ticks={[0, 300, 600]} tick={{ fill: 'var(--mute)', fontSize: 11 }} stroke="var(--sep)" />
-              <ReferenceLine y={st.dose.limit} stroke="var(--yellow)" strokeDasharray="4 4" />
-              <Line dataKey="ignored" stroke="var(--mute)" dot={false} strokeWidth={view === 'no' ? 3 : 1.5} isAnimationActive={false} />
-              <Line dataKey="sheltered" stroke="var(--blue)" dot={false} strokeWidth={view === 'sh' ? 3 : 1.5} isAnimationActive={false} />
+        <div className="card dose-chart-card">
+          <div className="between"><div><p className="eyebrow">ILLUSTRATIVE SCENARIO</p><h2>Mission dose projection</h2></div></div>
+          <div className="seg dose-mode"><button className={doseView === 'no' ? 'on' : ''} onClick={() => setDoseView('no')}>No shelter</button><button className={doseView === 'sheltered' ? 'on' : ''} onClick={() => setDoseView('sheltered')}>Sheltered after day {st.day}</button></div>
+          <ResponsiveContainer width="100%" height={190}>
+            <LineChart data={SIMULATED_DOSE} margin={{ top: 8, right: 4, bottom: 0, left: -16 }}>
+              <CartesianGrid stroke="var(--sep)" vertical={false} />
+              <XAxis dataKey="day" type="number" domain={[0, 240]} ticks={[1, 80, 160, 240]} tick={{ fill: 'var(--mute)', fontSize: 10 }} stroke="var(--sep)" />
+              <YAxis domain={[0, 650]} ticks={[0, 300, 600]} tick={{ fill: 'var(--mute)', fontSize: 10 }} stroke="var(--sep)" />
+              <Tooltip contentStyle={{ background: 'var(--card)', border: '1px solid var(--sep)', borderRadius: 10, fontSize: 12 }} labelFormatter={day => `Mission day ${day}`} formatter={(value, name) => [`${value} mSv`, name === 'ignored' ? 'No shelter' : 'Sheltered']} />
+              <ReferenceLine y={DOSE_MODEL_REFERENCE_MSV} stroke="var(--yellow)" strokeDasharray="4 4" />
+              <Line type="monotone" dataKey="ignored" name="No shelter" stroke="var(--mute)" dot={false} strokeWidth={doseView === 'no' ? 3 : 1.5} isAnimationActive={false} />
+              <Line type="monotone" dataKey="sheltered" name="Sheltered" stroke="var(--blue)" dot={false} strokeWidth={doseView === 'sheltered' ? 3 : 1.5} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
-          <div className="dose-legend mut"><span><i className="legend-gray" />No shelter</span><span><i className="legend-blue" />Sheltered</span><span><i className="legend-yellow" />Limit</span></div>
+          <div className="dose-legend mut"><span><i className="legend-gray" />No shelter</span><span><i className="legend-blue" />Sheltered after today</span><span><i className="legend-yellow" />Model reference</span></div>
+          <p className="solar-foot">At day 240, this fixed scenario projects {Math.round(projectedDose.ignored - projectedDose.sheltered)} mSv less in the sheltered path. Real exposure depends on measured radiation, vehicle shielding, trajectory, and mission procedures.</p>
         </div>
-        <p className="mut pad">Illustrative model. Verify limits against NASA-STD-3001.</p>
-        <p className="row">Today's dose · {(mSv - (view === 'sh' ? prev.sheltered : prev.ignored)).toFixed(2)} mSv</p>
+        <section className="card solar-card" aria-label="NASA solar particle event reports">
+          <div className="solar-heading"><div><p className="eyebrow">SPACE WEATHER · NASA DONKI</p><h2>Solar particle events</h2></div></div>
+          <p className="solar-feed">Observed event reports from the past 7 days · refreshed every 15 minutes</p>
+          {solarError && <div className="solar-event"><span className="solar-symbol" aria-hidden="true">!</span><div><b>NASA feed unavailable</b><small>{solarError}</small></div><button className="link" onClick={() => getSolarFeed().then(data => { setSolarFeed(data); setSolarError(''); }).catch(error => setSolarError((error as Error).message))}>Retry</button></div>}
+          {!solarError && !solarFeed && <p className="mut">Loading NASA event reports…</p>}
+          {!solarError && solarFeed && (solarFeed.events.length ? <div className="solar-events">{solarFeed.events.map((event, index) => <div className="solar-event" key={`${event.eventTime}-${index}`}><span className="solar-symbol" aria-hidden="true">☼</span><div><b>{index === 0 ? 'Latest reported event' : 'Reported event'}</b><small>{event.eventTime ? new Date(event.eventTime).toLocaleString() : 'Time not provided'}{event.instruments?.length ? ` · ${event.instruments.map(instrument => instrument.displayName).filter(Boolean).join(', ')}` : ''}</small></div>{event.link && <a className="solar-severity" href={event.link} target="_blank" rel="noreferrer">NASA ↗</a>}</div>)}</div> : <p className="mut">No solar energetic particle reports in this 7-day catalog window. This does not mean radiation risk is absent.</p>)}
+          <p className="solar-foot">NASA DONKI reports observed events; it does not provide crew exposure or a shelter-time forecast. Use onboard dosimeters and mission radiation procedures for decisions. <a href="https://ccmc.gsfc.nasa.gov/DONKI/" target="_blank" rel="noreferrer">Open NASA DONKI ↗</a>{solarFeed?.fetchedAt ? ` · Updated ${new Date(solarFeed.fetchedAt).toLocaleTimeString()}` : ''}</p>
+        </section>
       </>}
 
       {tab === 'earth' && <>
@@ -267,8 +281,11 @@ export default function App() {
         <div className="card">
           <p className="eyebrow warn">⚠ WATCH · HEART</p>
           {st.alert.explanation_source && <p className="explanation-source">{st.alert.explanation_source === 'openrouter' ? `LLM-generated · ${st.alert.explanation_model || 'OpenRouter'}` : 'Template fallback · LLM unavailable'}</p>}
+          {st.alert.evidence_provider && st.alert.evidence_provider !== 'none' && <p className="explanation-source">{st.alert.evidence_provider === 'serpapi' ? 'Evidence retrieved with SerpApi' : st.alert.evidence_provider === 'curated' ? 'SERPAPI_API_KEY not set · showing curated sources' : 'SerpApi unavailable · showing curated sources'}</p>}
           <h2>{st.alert.title || 'Alert'}</h2><p className="mut">{st.alert.text}</p>
-          <ul className="cites">{st.alert.cites.map(c => <li key={c.title}><a href={c.url}>↗ {c.title} ›</a></li>)}</ul>
+          {st.alert.evidence_summary && <div className="evidence-summary"><b>Retrieved research context</b><p>{st.alert.evidence_summary}</p></div>}
+          {!st.alert.evidence_summary && !!st.alert.evidence_results?.length && <div className="evidence-snippets"><b>Retrieved source excerpts</b>{st.alert.evidence_results.map(item => <p key={item.url}>{item.snippet}</p>)}</div>}
+          <ul className="cites">{st.alert.cites.map(c => <li key={c.url}><a href={c.url}>↗ {c.title} ›</a></li>)}</ul>
         </div>
         {!online && <div className="card"><b>Working offline, will sync when the link returns</b><p className="mut">Follow the onboard medical protocol.</p></div>}
         <div className="card">
@@ -302,8 +319,6 @@ export default function App() {
           <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-current={tab === k}>
             <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{ICON[k]}</svg>{n}</button>))}
       </nav>
-      <div className="ios-home" aria-hidden="true" />
-
       {open && <Sheet title={s.name} onClose={() => setOpen(false)}>
         {rows.length > 0 && <>
           <h3>Your readings</h3>

@@ -55,6 +55,15 @@ export interface ScoreResult {
   explanation_source?: 'openrouter' | 'fallback';
   explanation_model?: string;
   explanation_error?: string;
+  evidence_summary?: string;
+  evidence_provider?: 'serpapi' | 'curated' | 'curated_fallback' | 'none';
+  evidence_results?: EvidenceResult[];
+}
+
+export interface EvidenceResult {
+  title: string;
+  url: string;
+  snippet: string;
 }
 
 export interface CategoryScore extends ScoreResult {
@@ -131,19 +140,12 @@ export interface Sys extends SystemMeta {
   z: number;
 }
 
-export interface DosePt {
-  day: number;
-  ignored: number;
-  sheltered: number;
-}
-
 export interface State {
   day: number;
   systems: Sys[];
   results: Partial<Record<Category, CategoryScore>>;
   overall: ScoreResult;
-  dose: { limit: number; series: DosePt[] };
-  alert: { title?: string; text: string; cites: { title: string; url: string }[]; explanation_source?: 'openrouter' | 'fallback'; explanation_model?: string };
+  alert: { title?: string; text: string; cites: { title: string; url: string }[]; explanation_source?: 'openrouter' | 'fallback'; explanation_model?: string; evidence_summary?: string; evidence_provider?: ScoreResult['evidence_provider']; evidence_results?: EvidenceResult[] };
   demo?: boolean;
 }
 
@@ -154,22 +156,8 @@ export interface Session {
 }
 
 export const MISSION_DAY = 80;
-export const CAREER_LIMIT = 600;
 
 export const ALERT_CITES = [
   { title: 'NASA · Cardiovascular monitoring in microgravity', url: 'https://www.nasa.gov/wp-content/uploads/2022/03/iss_technical_publication_030116.pdf' },
   { title: 'UCI · WESAD wearable-signal dataset', url: 'https://archive.ics.uci.edu/dataset/465/wesad' },
 ];
-
-export function doseSeries(): DosePt[] {
-  let ignored = 0;
-  let sheltered = 0;
-  const series: DosePt[] = [];
-  for (let day = 0; day <= 240; day += 1) {
-    const base = day === 0 ? 0 : day < 79 ? 1.815 : day === 79 ? 1.81 : day === 80 ? 0.62 : 0;
-    ignored += day > 80 ? 2.85 : base;
-    sheltered += day > 80 ? 1.6 : base;
-    series.push({ day, ignored: +ignored.toFixed(2), sheltered: +sheltered.toFixed(2) });
-  }
-  return series;
-}

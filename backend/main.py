@@ -1,7 +1,12 @@
 import os
 import secrets
 import sys
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, time, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -17,6 +22,7 @@ from pydantic import BaseModel, Field
 from backend.auth import normalize_phone, hash_password, verify_password
 from backend.scoring import CATEGORIES, score_category, score_overall
 from backend.explain import explain
+from backend.evidence import search_evidence
 
 load_dotenv(ROOT / ".env")
 _db = None
@@ -151,8 +157,47 @@ def get_status(userid: str = Query(...), category: str = Query("overall")):
                               [x for x in mine if x["phase"] == "after"])
 
     result = score_overall([one(c) for c in CATEGORIES]) if category == "overall" else one(category)
-    result.update(explain(result, use_llm=result.get("status") == "scored"))
+    evidence = search_evidence(result) if category == "overall" else {"provider": "none", "results": [], "query": None}
+    result.update(explain(result, use_llm=result.get("status") == "scored", evidence=evidence["results"]))
+    result["evidence_provider"] = evidence["provider"]
+    result["evidence_results"] = evidence["results"]
     return result
+
+
+@lru_cache(maxsize=1)
+def _nasa_sep_events(_cache_minute: str):
+    """Fetch recent solar energetic particle event reports from NASA DONKI."""
+    today = datetime.now(timezone.utc).date()
+    params = urllib.parse.urlencode({
+        "startDate": (today - timedelta(days=7)).isoformat(),
+        "endDate": today.isoformat(),
+    })
+    url = f"https://ccmc.gsfc.nasa.gov/DONKI-API/get/SEP?{params}"
+    req = urllib.request.Request(url, headers={"User-Agent": "OrbitalTwin/1.0"})
+    with urllib.request.urlopen(req, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+@app.get("/space-weather")
+def space_weather():
+    """Return NASA's recent observed SEP event reports; this is not a forecast."""
+    try:
+        payload = _nasa_sep_events(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise HTTPException(502, "NASA space weather feed is temporarily unavailable") from error
+    events = []
+    for event in payload if isinstance(payload, list) else []:
+        events.append({
+            "eventTime": event.get("eventTime"),
+            "link": event.get("link"),
+            "instruments": event.get("instruments", []),
+        })
+    events.sort(key=lambda event: event.get("eventTime") or "", reverse=True)
+    return {
+        "events": events[:5],
+        "fetchedAt": datetime.now(timezone.utc).isoformat(),
+        "source": "NASA DONKI Solar Energetic Particle catalog",
+    }
 
 
 if __name__ == "__main__":
